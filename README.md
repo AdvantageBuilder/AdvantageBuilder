@@ -21,7 +21,7 @@ All without the overhead of building full applications.
 - **Agent Helper** — build structured, deterministic agents
 - **WinFormsHelper** — create UI tools without writing full applications
 - **File, Web, and Data Helpers** — built‑in utilities for common automation tasks
-- **Extensible Architecture** — plug in your own engines and helpers**
+- **Extensible Architecture** — plug in your own engines and helpers
 
 ## Why AdvantageBuilder?
 AdvantageBuilder fills the gap between:
