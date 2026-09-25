@@ -1,1 +1,36 @@
+You can combine JScript, Powershell and Template Language 
+syntax in a single macro.
 
+Template Language - Hello World!
+
+
+[!JSCRIPT]
+
+//write output followed by new line
+writeln("JScript: Hello World!, followed by new line");
+
+//write output
+write("JScript: Hello World!");
+
+[!/JSCRIPT]
+
+
+[!POWERSHELLSCRIPT]
+
+#popup a message box
+alert 'Powershell: Hello World!';
+
+'Powershell: Hello World!'
+
+[!/POWERSHELLSCRIPT]
+
+[!JAVASCRIPTV8]
+//popup a message box
+alert('JavaScriptV8: Hello World!');
+
+//write output followed by new line
+writeln("JavaScriptV8: Hello World!, followed by new line");
+
+//write output
+write("JavaScriptV8: Hello World!");
+[!/JAVASCRIPTV8]
