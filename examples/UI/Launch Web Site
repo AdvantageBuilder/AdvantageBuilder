@@ -14,5 +14,5 @@ launchHTMLForm("www.google.com");
 var filePathGUI = getGUIFilePath("UserInteraction.html");
 
 //Show WEB GUI 
-launchHTMLForm(filePathGUI); //returns HTML Document
+launchHTMLForm(filePathGUI); //returns Winform
 [!/JAVASCRIPTV8]
