@@ -1,1 +1,18 @@
+[!JAVASCRIPTV8]
+/*
+This example shows how to launch any HTML Web Page. This might be useful if you plan to have self contained web applications, 
+that do not require any interactions with the main macro.
+*/
 
+//Example 1. Launch any internet website like www.google.com
+
+launchHTMLForm("www.google.com");
+
+//Example 2. Launch local web application
+
+//Get GUI file path
+var filePathGUI = getGUIFilePath("UserInteraction.html");
+
+//Show WEB GUI 
+launchHTMLForm(filePathGUI); //returns HTML Document
+[!/JAVASCRIPTV8]
