@@ -1,1 +1,20 @@
+[!JAVASCRIPTV8]
+/*
+This example shows how to interact with users utilising the 
+prompt, confirm, and alert commands
+*/
 
+// get user input
+let age = prompt("Title test", "How old are you?", "20");
+
+// get user confirmation
+if(confirm("Are you really " + age + "?"))
+{
+	alert("Your age has been confirmed!");
+}
+else
+{
+	alert("Your age has NOT been confirmed!");
+}
+
+[!/JAVASCRIPTV8]
