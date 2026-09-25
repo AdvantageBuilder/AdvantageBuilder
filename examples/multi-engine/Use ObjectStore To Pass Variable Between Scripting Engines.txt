@@ -1,1 +1,24 @@
+[!POWERSHELLSCRIPT]
 
+$someVar = 234
+
+addToObjectStore "hello" $someVar
+
+[!/POWERSHELLSCRIPT]
+
+[!JAVASCRIPTV8]
+
+var jsTest = getFromObjectStore("hello");
+
+writeln("JSV8: " + jsTest);
+
+[!/JAVASCRIPTV8]
+
+[!JSCRIPT]
+
+var jsTest = getFromObjectStore("hello");
+
+writeln("JScript: " + jsTest);
+
+[!/JSCRIPT]
+Template Language: [!VAR]hello[!/VAR]
