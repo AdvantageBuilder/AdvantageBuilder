@@ -1,1 +1,117 @@
+[!JAVASCRIPTV8]
 
+var winformsHelper = eval(getSourceCode('WinFormsHelper', 'Macro Main Helpers\\Library', 'WinFormsHelper'));
+
+var mainForm = winformsHelper.CreateForm('User Interaction - Winforms');
+
+
+var txtName = winformsHelper.AddTextBox(mainForm, "Name");
+
+let ages = ['10 - 20', '21 - 30', '31 - 40', '41 - 50', '51 - 60', '61 - 70']
+let cboAgeGroup = winformsHelper.AddComboBox(mainForm, "Age Group", ages, '10 - 20');
+
+//let rbMale = winformsHelper.AddRadioButton(mainForm, "Male", true);
+//let rbFemale = winformsHelper.AddRadioButton(mainForm, "Female", false);
+
+var chkMarried = winformsHelper.AddCheckBox(mainForm, "Married?", false);
+
+let skillset = ["HTML", "Javascript", "SQL", "C#"];
+let lstSkills = winformsHelper.AddListBox(mainForm, "Skills", skillset);
+let SelectionMode = getEnum("System.Windows.Forms.SelectionMode");
+lstSkills.SelectionMode = SelectionMode.MultiExtended;
+
+var txtResume = winformsHelper.AddFilePickerWithButton(mainForm, "Resume", "Word (*.doc, *.docx)|*.doc;*.docx");
+
+let grpGender = winformsHelper.AddGroupBox(mainForm, "Gender");
+grpGender.Height = 50;
+
+let rbMale = winformsHelper.CreateControl("RadioButton");
+rbMale.Text = "Male"
+rbMale.Checked = true;
+rbMale.Left = 5;
+rbMale.Top = 15;
+rbMale.Width = 50;
+
+let rbFemale = winformsHelper.CreateControl("RadioButton");
+rbFemale.Text = "Female"
+rbFemale.Left = 55;
+rbFemale.Top = 15;
+
+grpGender.Controls.Add(rbMale);
+grpGender.Controls.Add(rbFemale);
+
+
+txtName.Left = lstSkills.Left = chkMarried.Left = cboAgeGroup.Left;
+
+//Declare variables
+var name = '';
+var ageGroup = '';
+var gender = '';
+var bMarried = false;
+var resumePath = '';
+var skills = [];
+
+
+winformsHelper.FinaliseDialogForm(mainForm);
+
+if(mainForm.ShowDialog().ToString() == "OK")
+{
+
+	name = txtName.Text;
+
+	ageGroup = cboAgeGroup.SelectedItem;
+
+	if(rbMale.Checked){
+		gender = "Male";
+	}
+
+	if(rbFemale.Checked){
+		gender = "Female";
+	}
+	
+	bMarried = chkMarried.Checked;
+
+	resumePath = txtResume.Text;
+
+	if(resumePath == null || resumePath === undefined || resumePath.length == 0)
+	{
+		resumePath = 'N/A';
+	}
+
+	let selectedItems = lstSkills.SelectedItems;
+
+	for(let i of selectedItems){ 
+		skills.push(i);
+	}
+
+	//Generate output 
+	writeln("You have selected:");
+	writeln("");
+
+
+	write('Name: ');
+	writeln(name);
+
+	write('Age Group: ');
+	writeln(ageGroup);
+
+	write('Gender: ');
+	writeln(gender);
+
+	write('Married?: ');
+	writeln(bMarried);
+
+	write('Resume: ');
+	writeln(resumePath);
+
+	writeln('Skills: ');
+	for(var o in skills)
+	{
+		writeln(skills[o]);
+	}
+
+}
+
+winformsHelper.CleanUpForm(mainForm);
+
+[!/JAVASCRIPTV8]
