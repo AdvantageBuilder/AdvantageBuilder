@@ -1,1 +1,88 @@
+[!JSCRIPT]
+/*
+This example shows how to get values from HTML Web Form created by Macro Input Helper
+*/
 
+// create instance
+var macroInputHelper = eval(getSourceCode('MacroInputHelper', 'Macro Main Helpers\\Library', 'MacroInputHelper'));
+
+// create a section
+var section = macroInputHelper.AddCustomInputSection("Custom Input Section", "This is where we show instructions");
+
+// define HTML for the drop down/list elements
+var ddlAgeGroup = "<select name='ddlAgeGroup'>";
+ddlAgeGroup += "<option value='10 - 20' selected>10 - 20</option>";
+ddlAgeGroup += "<option value='21 - 30'>21 - 30</option>";
+ddlAgeGroup += "<option value='31 - 40'>31 - 40</option>";
+ddlAgeGroup += "<option value='41 - 50'>41 - 50</option>";
+ddlAgeGroup += "<option value='51 - 60'>51 - 60</option>";
+ddlAgeGroup += "<option value='61 - 70'>61 - 70</option>";
+ddlAgeGroup += "</select>";
+
+var ddlGender = "<select name='ddlGender'>";
+ddlGender += "<option value='Male'>Male</option>";
+ddlGender += "<option value='Female'>Female</option>";
+ddlGender += "</select>";
+
+var lstSkills = "<select name='lstSkills' multiple>";
+lstSkills += "<option value='HTML'>HTML</option>";
+lstSkills += "<option value='JavaScript'>JavaScript</option>";
+lstSkills += "<option value='SQL'>SQL</option>";
+lstSkills += "<option value='C#'>C#</option>";
+lstSkills += "</select>";
+
+// add fields/elements to the web page
+section.AddCustomField("Name", "text");
+section.AddCustomField("Age Group", null, ddlAgeGroup);
+section.AddCustomField("Gender", null, ddlGender);
+section.AddCustomField("Married?", "checkbox");
+section.AddCustomField("Age Group", null, lstSkills);
+section.AddCustomField("Resume", "file");
+
+var processedSections = showMacroGUI(macroInputHelper);
+
+if (processedSections != null)
+{
+	var processedSection = processedSections[0];
+
+//Declare variables
+var name = processedSection["Name"];
+var ageGroup = processedSection["ddlAgeGroup"];
+var gender = processedSection["ddlGender"];
+var bMarried = processedSection["Married?"];
+var resumePath = processedSection["Resume"];
+var skills = processedSection["lstSkills"];
+
+	if(resumePath == undefined)
+	{
+		resumePath = 'N/A';
+	}
+	
+//Generate output 
+writeln("You have selected:");
+writeln("");
+
+
+write('Name: ');
+writeln(name);
+
+write('Age Group: ');
+writeln(ageGroup);
+
+write('Gender: ');
+writeln(gender);
+
+write('Married?: ');
+writeln(bMarried);
+
+write('Resume: ');
+writeln(resumePath);
+
+writeln('Skills: ');
+for(var o in skills)
+{
+	writeln(skills[o]);
+}
+}
+
+[!/JSCRIPT]
