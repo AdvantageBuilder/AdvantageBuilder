@@ -1,1 +1,44 @@
+[!JAVASCRIPTV8]
 
+//Example 1 - Run a macro and let it display results
+
+writeln("Example 1: About to call the 'Get a shopping list' macro.");
+writeln("");
+
+callMacro(true, "Get a shopping list", "Hello World\\Helper Macros");
+
+writeln("After calling the 'Get a shopping list' macro.");
+writeln("");
+
+//Example 2 - Run a macro, get the results and show it here
+
+writeln("Example 2: About to call the 'Get a shopping list' macro for the second time.");
+writeln("");
+
+var result = callMacro(false, "Get a shopping list", "Hello World\\Helper Macros");
+
+writeln("After calling the 'Get a shopping list' macro for the second time.");
+writeln("");
+
+writeln(result);
+writeln("");
+
+//Example 3 - Passing parameters to macros
+
+//define and initialise the parameter object
+var param = new Object();
+param.x = 4;
+param.y = 5;
+param.sum = null;
+
+writeln("Example 3: About to call the 'Calculate Sum' macro with parameters");
+writeln("");
+
+callMacro(false, "Calculate Sum", "Hello World\\Helper Macros", param);
+
+writeln("After calling the 'Calculate Sum' macro with parameters");
+writeln("");
+
+write(param.x + " + " + param.y + " = " + param.sum);
+
+[!/JAVASCRIPTV8]
