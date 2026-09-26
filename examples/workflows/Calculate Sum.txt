@@ -1,1 +1,8 @@
+[!JSCRIPT]
 
+if(args != null)
+{
+	args.sum = eval(args.x) + eval(args.y);
+}
+
+[!/JSCRIPT]
