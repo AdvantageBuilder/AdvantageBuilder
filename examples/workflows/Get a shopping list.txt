@@ -1,1 +1,4 @@
-
+Milk,
+Bread,
+Potatos,
+Tomatos
