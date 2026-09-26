@@ -1,1 +1,37 @@
+[!JAVASCRIPTV8]
+/*
+This example shows how pass parameters to web forms/pages. You can pass parameters by: 
+1 - Query strings
+2 - GUI Parameters
+3 - Macro Arguments
+*/
+
+
+var url = "file://" + getGUIFilePath("PassingParamsDemo.html");
+
+//Passing values by Query Strings
+
+var qs = "?Planet=Earth&Country=Australia";
+
+url += qs;
+
+//Passing values by GUI Paramaters
+
+//Make use of GUI Parameters Object Model
+var p = eval(getSourceCode('GUIParameters', 'Macro Main Helpers\\Library', 'GUIParameters'));
+
+p.Add('City', 'Sydney');
+p.Add('Suburb', 'Bondi Beach');
+p.Save();
+
+//Passing values by Macro Arguments
+
+var params = {};
+params.StreetName = "George";
+params.StreetNumber = "45";
+
+//Show Web Page
+launchHTMLForm(url, params);
+
+[!/JAVASCRIPTV8]
 
