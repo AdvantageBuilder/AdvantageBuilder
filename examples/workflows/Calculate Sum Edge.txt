@@ -1,0 +1,11 @@
+[!JAVASCRIPTV8]
+
+if(args != null)
+{
+	args.sum = eval(args.x) + eval(args.y);
+
+	write(args.sum);
+}
+
+[!/JAVASCRIPTV8]
+
