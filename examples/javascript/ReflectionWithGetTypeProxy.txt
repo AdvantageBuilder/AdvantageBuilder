@@ -1,1 +1,18 @@
+[!JAVASCRIPTV8]
 
+let MessageBox = getTypeProxy("System.Windows.Forms.MessageBox");
+let MessageBoxButtons = getTypeProxy("System.Windows.Forms.MessageBoxButtons");
+let btn = MessageBoxButtons.Get("OKCancel");
+let MessageBoxIcon = getTypeProxy("System.Windows.Forms.MessageBoxIcon");
+let icon = MessageBoxIcon.Get("Warning");
+
+MessageBox.Invoke("Show","message text number 1!","V8 Javascript", btn, icon);
+
+MessageBoxButtons = getEnum("System.Windows.Forms.MessageBoxButtons");
+
+MessageBoxIcon = getEnum("System.Windows.Forms.MessageBoxIcon")
+
+
+MessageBox.Invoke("Show","message text number 2?","V8 Javascript", MessageBoxButtons.OKCancel, MessageBoxIcon.Question);
+
+[!/JAVASCRIPTV8]
