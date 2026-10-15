@@ -1,1 +1,161 @@
+[!POWERSHELLSCRIPT]
 
+# AdvantageBuilder AI Ollama Helper
+# Dynamically builds the full Ollama API payload based on $_args
+
+$responseText = ""
+
+if ($_args -ne $null) {
+
+    # Start with an empty hashtable
+    $body = @{}
+    $body.stream = $false
+
+    # Model
+    if ($null -ne $_args.Model) {
+        $body.model = $_args.Model
+    }
+
+    # Prompt (generate mode)
+    if ($null -ne $_args.Prompt) {
+        $body.prompt = $_args.Prompt
+    }
+
+    # Messages (chat mode)
+    $msg = @()
+
+    # Load caller-provided textual messages (if any)
+    if ($null -ne $_args.Messages) {
+        $msg = ($_args.Messages | ConvertTo-Json -Depth 10 | ConvertFrom-Json)
+
+        if ($msg -isnot [System.Collections.IEnumerable]) {
+            $msg = @($msg)
+        }
+    }
+
+    # Handle file attachments (each becomes its own message)
+    if ($null -ne $_args.Files) {
+
+        foreach ($path in $_args.Files) {
+
+            if (-not (Test-Path $path)) {
+                (getLogger).Error("File not found: $path")
+            }
+
+            $bytes  = [System.IO.File]::ReadAllBytes($path)
+            $base64 = [System.Convert]::ToBase64String($bytes)
+
+            # Create a standalone message for this file
+            $msg += @{
+                role  = "user"
+                files = @($base64)
+            }
+        }
+    }
+
+    # Assign final messages array to body
+    if ($msg.Count -gt 0) {
+        $body.messages = $msg
+    }
+
+
+    # Images (array of file paths → base64 strings)
+    if ($null -ne $_args.Images) {
+
+        $imageList = @()
+
+        foreach ($path in $_args.Images) {
+
+            if (-not (Test-Path $path)) {
+                (getLogger).Error("Image file not found: $path")
+            }
+
+            $bytes = [System.IO.File]::ReadAllBytes($path)
+            $base64 = [System.Convert]::ToBase64String($bytes)
+
+            $imageList += $base64
+        }
+
+        $body.images = $imageList
+    }
+
+    # Options (must be hashtable, not JSON string)
+    if ($null -ne $_args.Options) {
+        $opt = ($_args.Options | ConvertTo-Json -Depth 10 | ConvertFrom-Json)
+        $body.options = $opt
+    }
+
+    # Template (string only)
+    if ($null -ne $_args.Template) {
+        $body.template = $_args.Template
+    }
+
+    # System (string only)
+    if ($null -ne $_args.System) {
+        $body.system = $_args.System
+    }
+
+    # Raw (boolean or string)
+    if ($null -ne $_args.Raw) {
+        $body.raw = $_args.Raw
+    }
+
+    # KeepAlive
+    if ($null -ne $_args.KeepAlive) {
+        $body.keep_alive = $_args.KeepAlive
+    }
+
+    # Context — ALWAYS CLEAR unless explicitly provided
+    if ($null -ne $_args.Context) {
+        $ctx = ($_args.Context | ConvertTo-Json -Depth 10 | ConvertFrom-Json)
+        $body.context = $ctx
+    }
+    else {
+        # Default: clear context to avoid contamination
+        $body.context = @()
+    }
+
+    # Convert to JSON
+    $json = $body | ConvertTo-Json -Depth 10
+
+    # Determine endpoint
+    $endpoint = "generate"
+    if ($null -ne $_args.Messages) { $endpoint = "chat" }
+
+    $url = "http://localhost:11434/api/$endpoint"
+
+    # Send request
+    $response = Invoke-RestMethod -Uri $url `
+        -Method POST `
+        -Body $json `
+        -ContentType "application/json"
+
+    # Extract response text depending on endpoint
+    if ($endpoint -eq "generate") {
+        $responseText = $response.response
+    }
+    elseif ($endpoint -eq "chat") {
+        # Chat responses vary by model — check all valid fields
+        if ($response.message.content) {
+            $responseText = $response.message.content
+        }
+        elseif ($response.response) {
+            $responseText = $response.response
+        }
+        elseif ($response.content) {
+            $responseText = $response.content
+        }
+        elseif ($response.output) {
+            $responseText = $response.output
+        }
+        elseif ($response[0].message.content) {
+            $responseText = $response[0].message.content
+        }
+        else {
+            $responseText = "[No content returned]"
+        }
+    }
+}
+
+$responseText
+[!/POWERSHELLSCRIPT]
