@@ -1,1 +1,217 @@
+[!POWERSHELLSCRIPT]
 
+using module "[PSModuleLibrary]\WinFormsHelper.psm1"
+
+$winformsHelper = [WinFormsHelper]::new()
+
+$mainForm = $winformsHelper.CreateForm("AI Integration Helper", 650)
+$mainForm.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon([System.Windows.Forms.Application]::ExecutablePath)
+
+$engines = @("PowerShell","JavaScriptV8","JScript")
+$cboEngine = $winformsHelper.AddComboBox($mainForm, "Engine", $engines, "PowerShell")
+$engineLeft = $cboEngine.Left
+
+$providers = @("OpenAI","Anthropic","Google","Groq","Mistral","Mock")
+$cboProvider = $winformsHelper.AddComboBox($mainForm, "Provider", $providers, "OpenAI")
+$cboProvider.Left = $engineLeft
+
+$cboModel = $winformsHelper.AddComboBox($mainForm, "Model", @(), $null)
+$cboModel.Left = $engineLeft
+
+$txtApiKey = $winformsHelper.AddTextBox($mainForm, "API Key")
+$txtApiKey.Left = $engineLeft
+
+$chkStateful = $winformsHelper.AddCheckBox($mainForm, "Enable Stateful Mode (Chat-like)", $false)
+
+$chkSystemPrompt = $winformsHelper.AddCheckBox($mainForm, "Include System Prompt", $false)
+
+$txtSystemPrompt = $winformsHelper.AddTextBox($mainForm, "")
+$winformsHelper.SetToMultilineTextBox($txtSystemPrompt, 120, 400)
+$txtSystemPrompt.Enabled = $false
+$txtSystemPrompt.Font = New-Object System.Drawing.Font("Segoe UI", 11)
+
+$chkSystemPrompt.Add_CheckedChanged({
+    param($sender, $eventArgs)
+    $txtSystemPrompt.Enabled = $sender.Checked
+})
+
+$chkIncludePrompt = $winformsHelper.AddCheckBox($mainForm, "Include custom prompt", $false)
+
+$txtPrompt = $winformsHelper.AddTextBox($mainForm, "")
+$winformsHelper.SetToMultilineTextBox($txtPrompt, 120, 400)
+$txtPrompt.Enabled = $false
+$txtPrompt.Font = New-Object System.Drawing.Font("Segoe UI", 11)
+
+$chkIncludePrompt.Add_CheckedChanged({
+    param($sender, $eventArgs)
+    $txtPrompt.Enabled = $sender.Checked
+})
+
+function PopulateModelCombo([string]$provider, $cboModel) {
+    $cboModel.Items.Clear()
+
+    $models = switch ($provider) {
+        "OpenAI"     { @("gpt-4o-mini","gpt-4o","gpt-4.1","o3-mini","o1-preview") }
+        "Anthropic"  { @("claude-3-opus","claude-3-sonnet","claude-3-haiku") }
+        "Google"     { @("gemini-1.5-flash","gemini-1.5-pro") }
+        "Groq"       { @("llama-3-70b","llama-3-8b","mixtral-8x7b") }
+        "Mistral"    { @("mistral-large","mistral-small") }
+        "Mock"       { @("mock-model") }
+        default      { @() }
+    }
+
+    foreach ($m in $models) { $null = $cboModel.Items.Add($m) }
+
+    if ($models.Count -gt 0) { $cboModel.SelectedIndex = 0 }
+}
+
+$cboProvider.Add_SelectedIndexChanged({
+    param($sender, $eventArgs)
+    PopulateModelCombo $sender.SelectedItem $cboModel
+})
+
+PopulateModelCombo $cboProvider.SelectedItem $cboModel
+
+$engine = "PowerShell"
+
+if ($null -ne $_args -and $_args -is [string]) {
+    switch ($_args.ToLower()) {
+        "powershell"     { $engine = "PowerShell" }
+        "ps"             { $engine = "PowerShell" }
+        "javascriptv8"   { $engine = "JavaScriptV8" }
+        "jsv8"           { $engine = "JavaScriptV8" }
+        "v8"             { $engine = "JavaScriptV8" }
+        "jscript"        { $engine = "JScript" }
+        "js"             { $engine = "JScript" }
+    }
+}
+
+$cboEngine.SelectedItem = $engine
+
+$winformsHelper.FinaliseDialogForm($mainForm)
+
+function ToJsSingleString([string]$text) {
+    if (-not $text) { return '""'; }
+
+    $lines = $text -split "`r?`n"
+    $escapedLines = $lines | ForEach-Object {
+        $_.TrimEnd().Replace('"','\"')
+    }
+
+    $joined = [string]::Join('\n', $escapedLines)
+    return '"' + $joined + '"'
+}
+
+
+$snippet = ""
+
+if ($mainForm.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+
+    $provider = $cboProvider.Text
+    $model    = $cboModel.Text
+    $apiKey   = $txtApiKey.Text
+    $engine   = $cboEngine.SelectedItem
+
+    $includePrompt       = $chkIncludePrompt.Checked
+    $promptText          = $txtPrompt.Text
+
+    $includeSystemPrompt = $chkSystemPrompt.Checked
+    $systemPromptText    = $txtSystemPrompt.Text
+
+    $stateful            = $chkStateful.Checked
+
+    if (-not $provider) { $provider = "" }
+    if (-not $model)    { $model    = "" }
+    if (-not $apiKey)   { $apiKey   = "" }
+    if (-not $engine)   { $engine   = "PowerShell" }
+
+    if ($includePrompt -and $promptText) {
+        $finalPrompt = $promptText
+    }
+    else {
+        $finalPrompt = "yourPromptHere"
+    }
+
+    $jsSystemPrompt = ""
+    if ($includeSystemPrompt -and $systemPromptText) {
+        $jsSystemPrompt = ToJsSingleString $systemPromptText
+    }
+
+    $jsFinalPrompt = ToJsSingleString $finalPrompt
+
+    if ($engine -eq "PowerShell") {
+
+        $snippet += "using module ""[PSModuleLibrary]\AIHelper.psm1""`n`n"
+
+        $snippet += "`$AIHelper = [AIHelper]::new()`n`n"
+
+        $snippet += "`$AIHelper.Provider = ""$provider""`n"
+        $snippet += "`$AIHelper.Model    = ""$model""`n"
+        $snippet += "`$AIHelper.ApiKey   = ""$apiKey""`n`n"
+
+        if ($includeSystemPrompt -and $systemPromptText) {
+            $snippet += "`$AIHelper.SystemPrompt = @'`n"
+            $snippet += $systemPromptText + "`n"
+            $snippet += "'@`n`n"
+        }
+
+        if ($stateful) {
+            $snippet += "`$AIHelper.Stateful = `$true`n`n"
+        }
+
+        $snippet += "`$response = `$AIHelper.Send(@'`n"
+        $snippet += $finalPrompt + "`n"
+        $snippet += "'@)`n`n"
+
+        $snippet += "`$response`n"
+    }
+    elseif ($engine -eq "JavaScriptV8") {
+
+        $snippet += "var AIHelper = eval(getSourceCode('AIHelper', 'Macro Main Helpers\\Library', 'AIHelper'));`n`n"
+
+        $snippet += "AIHelper.Provider = ""$provider"";`n"
+        $snippet += "AIHelper.Model    = ""$model"";`n"
+        $snippet += "AIHelper.ApiKey   = ""$apiKey"";`n`n"
+
+        if ($includeSystemPrompt -and $systemPromptText) {
+            $snippet += "AIHelper.SystemPrompt = ```n"
+            $snippet += $systemPromptText + "`n"
+            $snippet += "```n`n"
+        }
+
+        if ($stateful) {
+            $snippet += "AIHelper.Stateful = true;`n`n"
+        }
+
+        $snippet += "let response = AIHelper.Send(```n"
+        $snippet += $finalPrompt + "`n"
+        $snippet += "``);`n`n"
+
+        $snippet += "writeln(response);`n"
+    }
+    elseif ($engine -eq "JScript") {
+
+        $snippet += "var AIHelper = eval(getSourceCode('AIHelper', 'Macro Main Helpers\\Library', 'AIHelper'));`n`n"
+
+        $snippet += "AIHelper.Provider = ""$provider"";`n"
+        $snippet += "AIHelper.Model    = ""$model"";`n"
+        $snippet += "AIHelper.ApiKey   = ""$apiKey"";`n`n"
+
+        if ($jsSystemPrompt) {
+            $snippet += "AIHelper.SystemPrompt = " + $jsSystemPrompt + ";`n`n"
+        }
+
+        if ($stateful) {
+            $snippet += "AIHelper.Stateful = true;`n`n"
+        }
+
+        $snippet += "var response = AIHelper.Send(" + $jsFinalPrompt + ");`n`n"
+        $snippet += "writeln(response);`n"
+    }
+
+    $snippet
+}
+
+$winformsHelper.CleanUpForm($mainForm)
+
+[!/POWERSHELLSCRIPT]
