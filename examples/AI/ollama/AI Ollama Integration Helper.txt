@@ -1,1 +1,560 @@
+[!POWERSHELLSCRIPT - STA]
 
+using module "[PSModuleLibrary]\WinFormsHelper.psm1"
+
+$winformsHelper = [WinFormsHelper]::new()
+
+$mainForm = $winformsHelper.CreateForm("AI Ollama Integration Helper")
+$mainForm.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon([System.Windows.Forms.Application]::ExecutablePath)
+
+# Engine selection
+$engines   = @("PowerShell","JavaScriptV8","JScript")
+$cboEngine = $winformsHelper.AddComboBox($mainForm, "Engine", $engines, "PowerShell")
+$engineLeft = $cboEngine.Left
+
+# Model list
+$ollamaModels = & ollama list |
+    Select-Object -Skip 1 |              # skip header row
+    ForEach-Object { ($_ -split '\s+')[0] } |
+    Sort-Object                           # alphabetical
+
+$cboModel = $winformsHelper.AddComboBox($mainForm, "Model", $ollamaModels)
+
+if($cboModel.Items.Count -gt 0){
+	$cboModel.SelectedIndex = 0
+}
+
+$cboModel.Width = 200
+$cboModel.Left = $engineLeft
+
+# Add TabControl using WinFormsHelper
+$tabs = $winformsHelper.AddControl($mainForm, "TabControl")
+$tabs.Width  = 620
+$tabs.Height = 400
+
+# Create tabs
+$tabPrompt   = New-Object System.Windows.Forms.TabPage
+$tabPrompt.Text = "Prompt"
+
+$tabImages  = New-Object System.Windows.Forms.TabPage
+$tabImages.Text = "Images"
+
+$tabOptions  = New-Object System.Windows.Forms.TabPage
+$tabOptions.Text = "Options"
+
+# Add tabs
+$null = $tabs.TabPages.Add($tabPrompt)
+$null = $tabs.TabPages.Add($tabImages)
+$null = $tabs.TabPages.Add($tabOptions)
+
+# Prompt tab controls
+
+# Prompt label
+$lblPrompt = $winformsHelper.CreateControl("System.Windows.Forms.Label")
+$lblPrompt.Text = "Prompt:"
+$lblPrompt.Left = 10
+$lblPrompt.Top  = 10
+$lblPrompt.Height = 20
+$tabPrompt.Controls.Add($lblPrompt)
+
+# Prompt textbox
+$txtPrompt = $winformsHelper.CreateControl("System.Windows.Forms.TextBox")
+$txtPrompt.Multiline  = $true
+$txtPrompt.ScrollBars = "Vertical"
+$txtPrompt.Left   = 10
+$txtPrompt.Top    = 30
+$txtPrompt.Width  = 580
+$txtPrompt.Height = 180
+$txtPrompt.Font = New-Object System.Drawing.Font("Segoe UI", 11)
+$tabPrompt.Controls.Add($txtPrompt)
+
+# System checkbox
+$chkSystemPrompt = $winformsHelper.CreateControl("System.Windows.Forms.CheckBox")
+$chkSystemPrompt.Text = "Include System Prompt"
+$chkSystemPrompt.Left = 10
+$chkSystemPrompt.Top  = 220
+$chkSystemPrompt.Width = 200
+$chkSystemPrompt.Height = 20
+$tabPrompt.Controls.Add($chkSystemPrompt)
+
+# System textbox
+$txtSystemPrompt = $winformsHelper.CreateControl("System.Windows.Forms.TextBox")
+$txtSystemPrompt.Multiline  = $true
+$txtSystemPrompt.ScrollBars = "Vertical"
+$txtSystemPrompt.Left   = 10
+$txtSystemPrompt.Top    = 240
+$txtSystemPrompt.Width  = 580
+$txtSystemPrompt.Height = 80
+$txtSystemPrompt.Enabled = $false
+$txtSystemPrompt.Font = New-Object System.Drawing.Font("Segoe UI", 11)
+$tabPrompt.Controls.Add($txtSystemPrompt)
+
+# Wire checkbox to enable/disable system textbox
+$chkSystemPrompt.Add_CheckedChanged({
+    $txtSystemPrompt.Enabled = $chkSystemPrompt.Checked
+})
+
+# Images tab
+$txtImage = $winformsHelper.CreateControl("TextBox")
+$txtImage.Left = 10
+$txtImage.Top  = 10
+$txtImage.Width = 470
+$tabImages.Controls.Add($txtImage)
+
+$btnBrowse = $winformsHelper.AddControl($mainForm, "Button")
+$btnBrowse.Text = "Browse"
+$btnBrowse.Left = 490
+$btnBrowse.Top  = 10
+$btnBrowse.Width = 50
+$tabImages.Controls.Add($btnBrowse)
+
+$btnAdd = $winformsHelper.AddControl($mainForm, "Button")
+$btnAdd.Text = "Add"
+$btnAdd.Left = 550
+$btnAdd.Top  = 10
+$btnAdd.Width = 50
+$tabImages.Controls.Add($btnAdd)
+
+$lstImages = $winformsHelper.CreateControl("ListBox")
+$lstImages.Left = 10
+$lstImages.Top  = 40
+$lstImages.Width = 470
+$lstImages.Height = 340
+$lstImages.SelectionMode = "MultiExtended"
+$tabImages.Controls.Add($lstImages)
+
+$btnRemove = $winformsHelper.AddControl($mainForm, "Button")
+$btnRemove.Text = "Remove"
+$btnRemove.Left = 490
+$btnRemove.Top  = 345
+$btnRemove.Width = 80
+$tabImages.Controls.Add($btnRemove)
+
+$btnBrowse.Add_Click({
+    param($sender, $eventArgs)
+
+	$dlg = New-Object System.Windows.Forms.OpenFileDialog
+	$dlg.Title = "Select an image"
+	$dlg.InitialDirectory = [Environment]::GetFolderPath("MyPictures")
+
+
+	$dlg.Filter = "Image Files (*.jpg;*.jpeg;*.png;*.webp;*.bmp;*.gif;*.tif;*.tiff)|*.jpg;*.jpeg;*.png;*.webp;*.bmp;*.gif;*.tif;*.tiff|All Files (*.*)|*.*"
+
+	$dlg.Multiselect = $false
+
+	if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+		$txtImage.Text = $dlg.FileName
+	}
+})
+
+$btnAdd.Add_Click({
+  param($sender, $eventArgs)
+
+	if(-not ([string]::IsNullOrEmpty($txtImage.Text))){
+
+		$lstImages.Items.Add($txtImage.Text)
+	}
+
+})
+
+$btnRemove.Add_Click({
+  param($sender, $eventArgs)
+
+	for($i = $lstImages.SelectedIndices.Count - 1; $i -ge 0; $i--){
+		$index = $lstImages.SelectedIndices[$i]
+		$lstImages.Items.RemoveAt($index)
+	}
+})
+
+
+# Options tab
+$lblTemp = $winformsHelper.CreateControl("System.Windows.Forms.Label")
+$lblTemp.Text = "Temperature:"
+$lblTemp.Left = 10
+$lblTemp.Top  = 10
+$tabOptions.Controls.Add($lblTemp)
+
+$txtTemp = $winformsHelper.CreateControl("System.Windows.Forms.TextBox")
+$txtTemp.Left = 120
+$txtTemp.Top  = 8
+$txtTemp.Width = 60
+$tabOptions.Controls.Add($txtTemp)
+
+$lblTopP = $winformsHelper.CreateControl("System.Windows.Forms.Label")
+$lblTopP.Text = "Top-p:"
+$lblTopP.Left = 10
+$lblTopP.Top  = 40
+$tabOptions.Controls.Add($lblTopP)
+
+$txtTopP = $winformsHelper.CreateControl("System.Windows.Forms.TextBox")
+$txtTopP.Left = 120
+$txtTopP.Top  = 38
+$txtTopP.Width = 60
+$tabOptions.Controls.Add($txtTopP)
+
+$lblMaxTokens = $winformsHelper.CreateControl("System.Windows.Forms.Label")
+$lblMaxTokens.Text = "Max Tokens:"
+$lblMaxTokens.Left = 10
+$lblMaxTokens.Top  = 70
+$tabOptions.Controls.Add($lblMaxTokens)
+
+$txtMaxTokens = $winformsHelper.CreateControl("System.Windows.Forms.TextBox")
+$txtMaxTokens.Left = 120
+$txtMaxTokens.Top  = 68
+$txtMaxTokens.Width = 60
+$tabOptions.Controls.Add($txtMaxTokens)
+
+$lblFormat = $winformsHelper.CreateControl("System.Windows.Forms.Label")
+$lblFormat.Text = "Format:"
+$lblFormat.Left = 10
+$lblFormat.Top  = 100
+$tabOptions.Controls.Add($lblFormat)
+
+$cboFormat = $winformsHelper.CreateControl("System.Windows.Forms.ComboBox")
+$cboFormat.Left = 120
+$cboFormat.Top  = 98
+$cboFormat.Width = 120
+$cboFormat.DropDownStyle = "DropDownList"
+$cboFormat.Items.AddRange(@("json","text"))
+$cboFormat.SelectedIndex = 0
+$tabOptions.Controls.Add($cboFormat)
+
+$lblKeepAlive = $winformsHelper.CreateControl("System.Windows.Forms.Label")
+$lblKeepAlive.Text = "KeepAlive:"
+$lblKeepAlive.Left = 10
+$lblKeepAlive.Top  = 130
+$tabOptions.Controls.Add($lblKeepAlive)
+
+$txtKeepAlive = $winformsHelper.CreateControl("System.Windows.Forms.TextBox")
+$txtKeepAlive.Left = 120
+$txtKeepAlive.Top  = 128
+$txtKeepAlive.Width = 120
+$tabOptions.Controls.Add($txtKeepAlive)
+
+$chkRaw = $winformsHelper.CreateControl("System.Windows.Forms.CheckBox")
+$chkRaw.Text = "Raw response"
+$chkRaw.Left = 10
+$chkRaw.Top  = 160
+$tabOptions.Controls.Add($chkRaw)
+
+$lblOptionsJson = $winformsHelper.CreateControl("System.Windows.Forms.Label")
+$lblOptionsJson.Text = "Options JSON Override:"
+$lblOptionsJson.Left = 10
+$lblOptionsJson.Top  = 190
+$lblOptionsJson.Width  = 140
+$tabOptions.Controls.Add($lblOptionsJson)
+
+$txtOptionsJson = $winformsHelper.CreateControl("System.Windows.Forms.TextBox")
+$txtOptionsJson.Multiline  = $true
+$txtOptionsJson.ScrollBars = "Vertical"
+$txtOptionsJson.Left   = 10
+$txtOptionsJson.Top    = 212
+$txtOptionsJson.Width  = 580
+$txtOptionsJson.Height = 150
+$tabOptions.Controls.Add($txtOptionsJson)
+
+$engine = "PowerShell"
+
+if ($null -ne $_args -and $_args -is [string]) {
+    switch ($_args.ToLower()) {
+        "powershell"     { $engine = "PowerShell" }
+        "ps"             { $engine = "PowerShell" }
+        "javascriptv8"   { $engine = "JavaScriptV8" }
+        "jsv8"           { $engine = "JavaScriptV8" }
+        "v8"             { $engine = "JavaScriptV8" }
+        "jscript"        { $engine = "JScript" }
+        "js"             { $engine = "JScript" }
+    }
+}
+
+$cboEngine.SelectedItem = $engine
+
+$winformsHelper.FinaliseDialogForm($mainForm)
+
+$snippet = ""
+
+if ($mainForm.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+
+    $engine          = $cboEngine.SelectedItem
+    $model           = $cboModel.Text
+    
+    if (-not $model) { $model = "llama3.1" }
+
+    $images = @($lstImages.Items)
+
+    if ($engine -eq "PowerShell") {  
+
+        # Determine whether options were explicitly provided
+        $optionsJsonOverride = -not [string]::IsNullOrWhiteSpace($txtOptionsJson.Text)
+        $optionsFieldsProvided = -not [string]::IsNullOrWhiteSpace($txtTemp.Text) -or `
+                                 -not [string]::IsNullOrWhiteSpace($txtTopP.Text) -or `
+                                 -not [string]::IsNullOrWhiteSpace($txtMaxTokens.Text) -or `
+                                 -not [string]::IsNullOrWhiteSpace($txtKeepAlive.Text) -or `
+                                 $chkRaw.Checked -or `
+                                 ($cboFormat.Text -ne "json")
+
+        $emitOptions = $optionsJsonOverride -or $optionsFieldsProvided
+
+        # Build options object (only used to produce JSON if needed)
+        $optionsObj = @{
+            temperature = if ([string]::IsNullOrWhiteSpace($txtTemp.Text)) { $null } else { [double]$txtTemp.Text }
+            top_p       = if ([string]::IsNullOrWhiteSpace($txtTopP.Text))   { $null } else { [double]$txtTopP.Text }
+            max_tokens  = if ([string]::IsNullOrWhiteSpace($txtMaxTokens.Text)) { $null } else { [int]$txtMaxTokens.Text }
+            format      = $cboFormat.Text
+            keep_alive  = $txtKeepAlive.Text
+            raw         = $chkRaw.Checked
+        }
+
+        if ($optionsJsonOverride) {
+            try {
+                $optionsObj = $txtOptionsJson.Text | ConvertFrom-Json
+            } catch {
+                # invalid override JSON — ignore and keep constructed optionsObj
+            }
+        }
+
+        # Build prompt payload values
+        $promptText = $txtPrompt.Text
+        $systemText = if ($chkSystemPrompt.Checked -and -not [string]::IsNullOrWhiteSpace($txtSystemPrompt.Text)) { $txtSystemPrompt.Text } else { $null }
+
+        $optionsJson  = $optionsObj    | ConvertTo-Json -Depth 10
+
+        # Build snippet 
+        $sb = New-Object System.Text.StringBuilder
+
+        # top-level header (no indent)
+        $sb.AppendLine('$aiParams = @{') | Out-Null
+        $sb.AppendLine('    Model = "' + $model + '"') | Out-Null
+        $sb.AppendLine('}') | Out-Null
+        $sb.AppendLine('') | Out-Null
+            
+        # Prompt here-string (starts at column 0)
+        $sb.AppendLine('$aiParams.Prompt = @"') | Out-Null
+        if ($null -ne $promptText) {
+            foreach ($line in ($promptText -split "`r?`n")) { $sb.AppendLine($line) | Out-Null }
+        }
+        $sb.AppendLine('"@') | Out-Null
+        $sb.AppendLine('') | Out-Null
+
+        if ($null -ne $systemText) {
+            $sb.AppendLine('$aiParams.System = @"') | Out-Null
+            foreach ($line in ($systemText -split "`r?`n")) { $sb.AppendLine($line) | Out-Null }
+            $sb.AppendLine('"@') | Out-Null
+            $sb.AppendLine('') | Out-Null
+        }
+
+        if ($images){            
+            $sb.AppendLine('$aiParams.Images = @(') | Out-Null
+
+            foreach ($item in $images) { $sb.AppendLine("    '$item'") | Out-Null }
+            $sb.AppendLine(')') | Out-Null
+            $sb.AppendLine('') | Out-Null
+        }
+   
+        if ($emitOptions) {
+            $sb.AppendLine('$optionsJson = @"') | Out-Null
+            foreach ($line in ($optionsJson -split "`r?`n")) { $sb.AppendLine($line) | Out-Null }
+            $sb.AppendLine('"@') | Out-Null
+            $sb.AppendLine('$aiParams.Options = ($optionsJson | ConvertFrom-Json)') | Out-Null
+            $sb.AppendLine('') | Out-Null
+        }
+
+        $sb.AppendLine('$response = callMacro $false ''AI Ollama Helper'' ''Macro Main Helpers\AI'' $aiParams') | Out-Null
+
+        $snippet = $sb.ToString()
+        
+    }
+    elseif ($engine -eq "JavaScriptV8") {
+
+        # Determine whether options were explicitly provided
+        $optionsJsonOverride = -not [string]::IsNullOrWhiteSpace($txtOptionsJson.Text)
+        $optionsFieldsProvided = -not [string]::IsNullOrWhiteSpace($txtTemp.Text) -or `
+                                 -not [string]::IsNullOrWhiteSpace($txtTopP.Text) -or `
+                                 -not [string]::IsNullOrWhiteSpace($txtMaxTokens.Text) -or `
+                                 -not [string]::IsNullOrWhiteSpace($txtKeepAlive.Text) -or `
+                                 $chkRaw.Checked -or `
+                                 ($cboFormat.Text -ne "json")
+
+        $emitOptions = $optionsJsonOverride -or $optionsFieldsProvided
+
+        # Build options object (only used to produce JSON if needed)
+        $optionsObj = @{
+            temperature = if ([string]::IsNullOrWhiteSpace($txtTemp.Text)) { $null } else { [double]$txtTemp.Text }
+            top_p       = if ([string]::IsNullOrWhiteSpace($txtTopP.Text))   { $null } else { [double]$txtTopP.Text }
+            max_tokens  = if ([string]::IsNullOrWhiteSpace($txtMaxTokens.Text)) { $null } else { [int]$txtMaxTokens.Text }
+            format      = $cboFormat.Text
+            keep_alive  = $txtKeepAlive.Text
+            raw         = $chkRaw.Checked
+        }
+
+        if ($optionsJsonOverride) {
+            try {
+                $optionsObj = $txtOptionsJson.Text | ConvertFrom-Json
+            } catch {
+                # invalid override JSON — ignore and keep constructed optionsObj
+            }
+        }
+
+        # Build prompt payload values
+        $promptText = $txtPrompt.Text
+        $systemText = if ($chkSystemPrompt.Checked -and -not [string]::IsNullOrWhiteSpace($txtSystemPrompt.Text)) { $txtSystemPrompt.Text } else { $null }
+
+        $optionsJson = $optionsObj | ConvertTo-Json -Depth 10
+
+        # Build snippet
+        $sb = New-Object System.Text.StringBuilder
+
+        # top-level header (no indent)
+        $sb.AppendLine('let aiParams = {') | Out-Null
+        $sb.AppendLine('    Model: "' + $model + '"') | Out-Null
+        $sb.AppendLine('};') | Out-Null
+        $sb.AppendLine('') | Out-Null
+
+        # Prompt template literal (starts at column 0)
+        $sb.AppendLine('aiParams.Prompt = `') | Out-Null
+        if ($null -ne $promptText) {
+            foreach ($line in ($promptText -split "`r?`n")) { $sb.AppendLine($line) | Out-Null }
+        }
+        $sb.AppendLine('`;') | Out-Null
+        $sb.AppendLine('') | Out-Null
+
+        if ($null -ne $systemText) {
+            $sb.AppendLine('aiParams.System = `') | Out-Null
+            foreach ($line in ($systemText -split "`r?`n")) { $sb.AppendLine($line) | Out-Null }
+            $sb.AppendLine('`;') | Out-Null
+            $sb.AppendLine('') | Out-Null
+        }
+
+        if ($images) {
+
+		$sb.AppendLine('aiParams.Images = [];') | Out-Null
+
+		foreach ($item in $images) {
+
+			$escaped = $item.Replace("'", "\\'")
+
+			$escaped = $escaped.Replace("\", "\\")
+
+			$sb.AppendLine("aiParams.Images.push('$escaped');") | Out-Null
+		}
+
+		$sb.AppendLine('') | Out-Null
+        }
+
+        if ($emitOptions) {
+            $sb.AppendLine('let optionsJson = `') | Out-Null
+            foreach ($line in ($optionsJson -split "`r?`n")) { $sb.AppendLine($line) | Out-Null }
+            $sb.AppendLine('`;') | Out-Null
+            $sb.AppendLine('aiParams.Options = JSON.parse(optionsJson);') | Out-Null
+            $sb.AppendLine('') | Out-Null
+        }
+
+        $sb.AppendLine('let response = callMacro(false, "AI Ollama Helper", "Macro Main Helpers\\AI", aiParams);') | Out-Null
+
+        $snippet = $sb.ToString()
+    }
+    elseif ($engine -eq "JScript") {
+
+        # Determine whether options were explicitly provided
+        $optionsJsonOverride = -not [string]::IsNullOrWhiteSpace($txtOptionsJson.Text)
+        $optionsFieldsProvided = -not [string]::IsNullOrWhiteSpace($txtTemp.Text) -or `
+                                 -not [string]::IsNullOrWhiteSpace($txtTopP.Text) -or `
+                                 -not [string]::IsNullOrWhiteSpace($txtMaxTokens.Text) -or `
+                                 -not [string]::IsNullOrWhiteSpace($txtKeepAlive.Text) -or `
+                                 $chkRaw.Checked -or `
+                                 ($cboFormat.Text -ne "json")
+
+        $emitOptions = $optionsJsonOverride -or $optionsFieldsProvided
+
+        # Build options object (only used to produce JSON if needed)
+        $optionsObj = @{
+            temperature = if ([string]::IsNullOrWhiteSpace($txtTemp.Text)) { $null } else { [double]$txtTemp.Text }
+            top_p       = if ([string]::IsNullOrWhiteSpace($txtTopP.Text))   { $null } else { [double]$txtTopP.Text }
+            max_tokens  = if ([string]::IsNullOrWhiteSpace($txtMaxTokens.Text)) { $null } else { [int]$txtMaxTokens.Text }
+            format      = $cboFormat.Text
+            keep_alive  = $txtKeepAlive.Text
+            raw         = $chkRaw.Checked
+        }
+
+        if ($optionsJsonOverride) {
+            try {
+                $optionsObj = $txtOptionsJson.Text | ConvertFrom-Json
+            } catch {
+                # invalid override JSON — ignore and keep constructed optionsObj
+            }
+        }
+
+        # Build prompt payload values
+        $promptText = $txtPrompt.Text
+        $systemText = if ($chkSystemPrompt.Checked -and -not [string]::IsNullOrWhiteSpace($txtSystemPrompt.Text)) { $txtSystemPrompt.Text } else { $null }
+
+        $optionsJson = $optionsObj | ConvertTo-Json -Depth 10
+
+        # Build snippet
+        $sb = New-Object System.Text.StringBuilder
+
+        # top-level header (no indent)
+        $sb.AppendLine('var aiParams = new Object();') | Out-Null
+        $sb.AppendLine('aiParams.Model = "' + $model + '";') | Out-Null
+        $sb.AppendLine('') | Out-Null
+
+        # Prompt multiline builder
+        $sb.AppendLine('var promptText = "";') | Out-Null
+        if ($null -ne $promptText) {
+            foreach ($line in ($promptText -split "`r?`n")) {
+                $escaped = $line.Replace('"', '""')
+                $sb.AppendLine('promptText += "' + $escaped + '\n";') | Out-Null
+            }
+        }
+        $sb.AppendLine('aiParams.Prompt = promptText;') | Out-Null
+        $sb.AppendLine('') | Out-Null
+
+        # System multiline builder
+        if ($null -ne $systemText) {
+            $sb.AppendLine('var systemText = "";') | Out-Null
+            foreach ($line in ($systemText -split "`r?`n")) {
+                $escaped = $line.Replace('"', '""')
+                $sb.AppendLine('systemText += "' + $escaped + '\n";') | Out-Null
+            }
+            $sb.AppendLine('aiParams.System = systemText;') | Out-Null
+            $sb.AppendLine('') | Out-Null
+        }
+
+        if ($images) {
+
+		$sb.AppendLine('aiParams.Images = [];') | Out-Null
+
+		foreach ($item in $images) {
+
+			$escaped = $item.Replace("'", "\\'")
+
+			$escaped = $escaped.Replace("\", "\\")
+
+			$sb.AppendLine("aiParams.Images.push('$escaped');") | Out-Null
+		}
+
+		$sb.AppendLine('') | Out-Null
+        }
+
+        if ($emitOptions) {
+            $sb.AppendLine('var optionsJson = "') | Out-Null
+            foreach ($line in ($optionsJson -split "`r?`n")) {
+                $escaped = $line.Replace('"', '""')
+                $sb.AppendLine($escaped) | Out-Null
+            }
+            $sb.AppendLine('";') | Out-Null
+            $sb.AppendLine('aiParams.Options = JSON.parse(optionsJson);') | Out-Null
+            $sb.AppendLine('') | Out-Null
+        }
+
+        $sb.AppendLine('var response = callMacro(false, "AI Ollama Helper", "Macro Main Helpers\\AI", aiParams);') | Out-Null
+
+        $snippet = $sb.ToString()
+    }
+
+    $snippet
+}
+
+$winformsHelper.CleanUpForm($mainForm)
+
+[!/POWERSHELLSCRIPT]
