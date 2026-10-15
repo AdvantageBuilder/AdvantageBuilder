@@ -1,1 +1,181 @@
+[!POWERSHELLSCRIPT]
 
+using module "[PSModuleLibrary]\WinFormsHelper.psm1"
+
+$winformsHelper = [WinFormsHelper]::new()
+
+$mainForm = $winformsHelper.CreateForm("AI Ollama Coding Assistant")
+$mainForm.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon([System.Windows.Forms.Application]::ExecutablePath)
+
+# Engine selection
+$engines   = @("PowerShell","JavaScriptV8","JScript")
+$cboEngine = $winformsHelper.AddComboBox($mainForm, "Engine", $engines, "PowerShell")
+$engineLeft = $cboEngine.Left
+
+# Model list
+$ollamaModels = & ollama list |
+    Select-Object -Skip 1 |              # skip header row
+    ForEach-Object { ($_ -split '\s+')[0] } |
+    Sort-Object                           # alphabetical
+
+$cboModel = $winformsHelper.AddComboBox($mainForm, "Model", $ollamaModels)
+
+if($cboModel.Items.Count -gt 0){
+	$cboModel.SelectedIndex = 0
+}
+
+$cboModel.Width = 200
+$cboModel.Left = $engineLeft
+
+$txtPrompt = $winformsHelper.AddTextBox($mainForm, "Prompt", $defaultValue)
+$winformsHelper.SetToMultilineTextBox($txtPrompt, 180, 580)
+$txtPrompt.ScrollBars = "Vertical"
+$txtPrompt.Font = New-Object System.Drawing.Font("Segoe UI", 11)
+
+$chkSystemPrompt = $winformsHelper.AddCheckBox($mainForm, "Include System Prompt", $true)
+
+$txtSystemPrompt = $winformsHelper.AddTextBox($mainForm, "System")
+$winformsHelper.SetToMultilineTextBox($txtSystemPrompt, 180, 580)
+$txtSystemPrompt.ScrollBars = "Vertical"
+$txtSystemPrompt.Font = New-Object System.Drawing.Font("Segoe UI", 11)
+
+
+# Wire checkbox to enable/disable system textbox
+$chkSystemPrompt.Add_CheckedChanged({
+    $txtSystemPrompt.Enabled = $chkSystemPrompt.Checked
+})
+
+function Set-SystemText{
+
+	if ($cboEngine.SelectedItem -eq "PowerShell") {
+
+		$txtSystemPrompt.Text = @"
+You are a PowerShell coder/developer assistant.
+The generated code will run inside a desktop application that hosts the PowerShell Script engine - AdvantageBuilder.
+Do not use Write-Host. Output is captured by the engine automatically, simply place the variable or an object on a new line. Examples:
+
+"this text is the output"
+`$outputVariable 
+
+You must output ONLY raw code.
+Do not wrap the code in ``` fences.
+Do not add explanations, comments, or markdown formatting.
+Your entire response must be valid code only.
+
+Additional AdvantageBuilder APIs are available:
+
+* alert("message") - shows message box
+* confirm("message") - shows message box, returns true/false
+* prompt("title", "message", "defaultValue") - shows message box, gets user prompt
+
+"@
+	}
+	elseif ($cboEngine.SelectedItem -eq "JavaScriptV8") {
+
+		$txtSystemPrompt.Text = @"
+You are a JavaScript coder/developer assistant.
+Generate code in modern JavaScript (ES2020+).
+The generated code will run inside a desktop application that hosts the JavaScript engine - AdvantageBuilder, not in the browser.
+You must output ONLY raw code.
+Do not wrap the code in ``` fences.
+Do not add explanations, comments, or markdown formatting.
+Your entire response must be valid code only.
+
+Additional AdvantageBuilder APIs are available:
+
+* write("string") - adds string to the output variable
+* writeln("string") - adds string plus new line character to the output variable
+
+The output variable is shown all at once after script is evaluated by the engine.
+
+* alert(message) - shows message box
+* confirm(message) - shows message box, returns true/false
+* prompt([title], message, defaultValue) - shows message box, gets user prompt
+"@
+	}
+	elseif ($cboEngine.SelectedItem -eq "JScript") {
+
+		$txtSystemPrompt.Text = @"
+You are a JScript coder/developer assistant.
+Generate code in JScript (ECMAScript 3) only.
+The generated code will run inside a desktop application that hosts the JavaScript engine - AdvantageBuilder, not in the browser.
+You must output ONLY raw code.
+Do not wrap the code in ``` fences.
+Do not add explanations, comments, or markdown formatting.
+Your entire response must be valid code only.
+
+Additional AdvantageBuilder APIs are available:
+
+* write("string") - adds string to the output variable
+* writeln("string") - adds string plus new line character to the output variable
+
+The output variable is shown all at once after script is evaluated by the engine.
+
+* alert(message) - shows message box
+* confirm(message) - shows message box, returns true/false
+* prompt([title], message, defaultValue) - shows message box, gets user prompt
+"@
+	}
+}
+
+$engine = "PowerShell"
+
+if ($null -ne $_args -and $_args -is [string]) {
+    switch ($_args.ToLower()) {
+        "powershell"     { $engine = "PowerShell" }
+        "ps"             { $engine = "PowerShell" }
+        "javascriptv8"   { $engine = "JavaScriptV8" }
+        "jsv8"           { $engine = "JavaScriptV8" }
+        "v8"             { $engine = "JavaScriptV8" }
+        "jscript"        { $engine = "JScript" }
+        "js"             { $engine = "JScript" }
+    }
+}
+
+$cboEngine.SelectedItem = $engine
+
+Set-SystemText
+
+$cboEngine.Add_SelectedIndexChanged({
+  param($sender, $eventArgs)
+
+	Set-SystemText
+
+})
+
+
+$winformsHelper.FinaliseDialogForm($mainForm)
+
+if ($mainForm.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+
+	$engine          = $cboEngine.SelectedItem
+	$model           = $cboModel.Text
+    
+	if (-not $model) { $model = "llama3.1" }
+
+      # Build prompt payload values
+      $promptText = $txtPrompt.Text
+      $systemText = if ($chkSystemPrompt.Checked -and -not [string]::IsNullOrWhiteSpace($txtSystemPrompt.Text)) { $txtSystemPrompt.Text } else { $null }
+
+	$aiParams = @{
+		Model = $model
+	}
+
+	$aiParams.Prompt = @"
+$promptText
+"@
+
+if ($null -ne $systemText) {
+	$aiParams.System = @"
+$systemText
+"@
+
+}
+	$response = callMacro $false 'AI Ollama Helper' 'Macro Main Helpers\AI' $aiParams
+
+	$response
+}
+
+$winformsHelper.CleanUpForm($mainForm)
+
+[!/POWERSHELLSCRIPT]
