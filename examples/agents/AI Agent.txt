@@ -1,1 +1,1619 @@
+[!POWERSHELLSCRIPT]
 
+using module "[PSModuleLibrary]\AIHelper.psm1"
+
+# ----------------------------------
+# Configuration (edit these globals)
+# ----------------------------------
+$GLOBAL:AgentGoal      = "Describe the task you want the agent to perform."
+$GLOBAL:AIProvider     = $null
+$GLOBAL:AIModel        = "llama3.1:8b-instruct-q4_K_M"
+$GLOBAL:APIKey         = $null
+$GLOBAL:AIHelper       = $null	# cloud AI helper, requires AIProvider, and API Key
+$GLOBAL:MaxIterations  = 30		# maximum number of loops allowed in case "finish" action is not triggered
+$GLOBAL:IterationDelay = 0.2		# seconds between iterations (tune for UI responsiveness)
+$GLOBAL:State          = @{}		# authoritative state, tool results, tool error
+$GLOBAL:EnabledTools   = @()		# array of internally defined tools to enable for agent's use
+$GLOBAL:Tools          = @()		# tool registry with manifest, handler
+$GLOBAL:EnableLogging  = $false	# turn logging On/Off
+$GLOBAL:Result         = ""		# result of the final action
+$GLOBAL:ScratchPad     = @{}		# agent's private memory
+
+# ----------------------------------
+# Logging functions
+# ----------------------------------
+function log-info{
+	param([string]$msg)
+
+	if($GLOBAL:EnableLogging){
+		(getLogger).Info($msg)
+	}
+}
+
+function log-error{
+	param([string]$msg)
+
+	if($GLOBAL:EnableLogging){
+		(getLogger).Error($msg)
+	}
+}
+
+# ----------------------------------
+# Add a Tool to the Tools Array
+# ----------------------------------
+function Add-Tool {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Name,
+
+        [Parameter(Mandatory=$true)]
+        [string]$Manifest,
+
+        [Parameter(Mandatory=$true)]
+        [string]$Handler
+    )
+
+    # Validate
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        throw "Tool name cannot be empty."
+    }
+    if ([string]::IsNullOrWhiteSpace($Handler)) {
+        throw "Tool '$Name' must have a handler."
+    }
+
+    # Create tool object
+    $toolObj = [PSCustomObject]@{
+        Name     = $Name
+        Manifest = $Manifest
+        Handler  = $Handler
+    }
+
+    # Add to global registry
+    $GLOBAL:Tools += $toolObj
+
+    log-info "Tool added: $Name"
+}
+
+# ----------------------------------
+# Check/process passed-in arguments
+# ----------------------------------
+
+if ($_args -ne $null) {
+
+	# Provider
+	if ($null -ne $_args.Provider) {
+		$GLOBAL:AIProvider = $_args.Provider
+	}
+
+	# Model
+	if ($null -ne $_args.Model) {
+		$GLOBAL:AIModel = $_args.Model
+	}
+
+	# API Key
+	if ($null -ne $_args.APIKey) {
+		$GLOBAL:APIKey = $_args.APIKey
+	}
+
+	if ($null -ne $_args.AgentGoal) {
+		$GLOBAL:AgentGoal = $_args.AgentGoal
+	}
+
+	if ($null -ne $_args.MaxIterations) {
+		$GLOBAL:MaxIterations = $_args.MaxIterations
+	}
+
+	if ($null -ne $_args.EnabledTools) {
+
+		# EnabledTools may be JSON or native objects
+		if ($_args.EnabledTools -is [string]) {
+			$GLOBAL:EnabledTools = $_args.EnabledTools | ConvertFrom-Json
+		}
+		else {
+			$GLOBAL:EnabledTools = $_args.EnabledTools
+		}
+	}
+
+	if ($null -ne $_args.Tools) {
+
+		# Tools may be JSON or native objects
+		if ($_args.Tools -is [string]) {
+			$GLOBAL:Tools = $_args.Tools | ConvertFrom-Json
+		}
+		else {
+			$GLOBAL:Tools = $_args.Tools
+		}
+	}
+
+	if ($null -ne $_args.EnableLogging) {
+		$GLOBAL:EnableLogging = $_args.EnableLogging
+	}
+}
+
+# ----------------------------------------
+# Add "state_store" Tool
+# ----------------------------------------
+
+$stateStoreManifest = @"
+state_store Tool
+Store arbitrary key/value pairs into STATE.
+
+content schema:
+{
+  "key": "<string>",
+  "value": "<string>"
+}
+"@
+
+$stateStoreHandler = @"
+param(`$content)
+
+"OK"
+"@
+
+Add-Tool -Name "state_store" -Manifest $stateStoreManifest -Handler $stateStoreHandler
+
+# ----------------------------------------
+# Add "scratchpad_write" Tool
+# ----------------------------------------
+
+$scratchpadWriteManifest = @"
+scratchpad_write Tool
+Write arbitrary key/value pairs into the agent's private scratchpad.
+
+content schema:
+{
+  "key": "<string>",
+  "value": "<string>"
+}
+"@
+
+$scratchpadWriteHandler = @"
+param(`$content)
+
+if (`$content -and `$content.key -and `$content.value) {
+    `$GLOBAL:ScratchPad[`$content.key] = `$content.value
+    "OK"
+}
+else {
+    "FAIL: key and value must not be empty"
+}
+"@
+
+Add-Tool -Name "scratchpad_write" -Manifest $scratchpadWriteManifest -Handler $scratchpadWriteHandler
+
+# ----------------------------------
+# Add Any Enabled tools
+# ----------------------------------
+
+$GLOBAL:EnabledTools.ForEach({
+
+	if($_ -eq "powershell_single_script_exec"){
+
+		# ----------------------------------------
+		# Add "powershell_single_script_exec" Tool
+		# ----------------------------------------
+
+		$psSingleManifest = @"
+powershell_single_script_exec Tool
+Calls the macro that executes powershell script, passing powershell script to execute as a parameter, 
+and returns the result back to the caller.
+
+content schema:
+{
+  "pscode": "<string>"
+}
+"@
+
+		$psSingleHandler = @"
+param(`$content)
+
+`$result = callMacro `$false 'RunPSScriptAsync' 'Macro Main Helpers' `$content.pscode
+
+`$result
+"@
+
+		Add-Tool -Name "powershell_single_script_exec" -Manifest $psSingleManifest -Handler $psSingleHandler
+	}
+	elseif($_ -eq "powershell_multiple_script_exec"){
+
+		# ------------------------------------------
+		# Add "powershell_multiple_script_exec" Tool
+		# ------------------------------------------
+
+		$psMultipleManifest = @"
+powershell_multiple_script_exec Tool
+Executes multiple PowerShell scripts in parallel pipelines and returns all results.
+The 'pscode' field must be an array of PowerShell script strings.
+
+content schema:
+{
+  "pscode": ["<string>"]
+}
+"@
+
+		$psMultipleHandler = @"
+param(`$content)
+
+`$result = callMacro `$false 'RunPSScriptsInPipelines' 'Macro Main Helpers' `$content.pscode
+
+`$result
+"@
+
+		Add-Tool -Name "powershell_multiple_script_exec" -Manifest $psMultipleManifest -Handler $psMultipleHandler
+	}
+	elseif($_ -eq "javascript_single_script_eval"){
+
+		# ----------------------------------------
+		# Add "javascript_single_script_eval" Tool
+		# ----------------------------------------
+
+		$jsSingleManifest = @"
+javascript_single_script_eval Tool
+Calls the macro that evaluates JavaScript, passing JavaScript to evaluate as a parameter, 
+and returns the result back to the caller.
+
+content schema:
+{
+  "jscode": "<string>"
+}
+"@
+
+		$jsSingleHandler = @"
+param(`$content)
+
+`$result = callMacro `$false 'RunJavaScript' 'Macro Main Helpers' `$content.jscode
+
+`$result
+"@
+
+		Add-Tool -Name "javascript_single_script_eval" -Manifest $jsSingleManifest -Handler $jsSingleHandler
+	}
+	elseif($_ -eq "ask_user"){
+
+		# ----------------------------------------
+		# Add "ask_user" Tool
+		# ----------------------------------------
+
+		$askUserManifest = @"
+ask_user Tool
+Pops us a message box, asking user a question, gets user response and returns it. Messaage box needs a title, question, and default response - optional, can be blank.
+
+content schema:
+{
+  "title": "<string>",
+  "question": "<string>",
+  "defaultresponse": "<string>"
+}
+"@
+
+		$askUserHandler = @"
+param(`$content)
+
+`$result = prompt `$content.title `$content.question `$content.defaultresponse
+
+`$result
+"@
+
+		Add-Tool -Name "ask_user" -Manifest $askUserManifest -Handler $askUserHandler
+	}
+	elseif($_ -eq "get_installed_voices"){
+
+		# ----------------------------------------
+		# Add "get_installed_voices" Tool
+		# ----------------------------------------
+
+		$getInstalledVoicesManifest = @"
+get_installed_voices Tool
+Returns the list of installed Windows TTS voices.
+
+content schema:
+{
+  "dummy": "string"
+}
+"@
+
+		$getInstalledVoicesHandler = @"
+param(`$content)
+
+# Enumerate installed voices
+Add-Type -AssemblyName System.Speech
+`$voices = (New-Object System.Speech.Synthesis.SpeechSynthesizer).GetInstalledVoices() |
+          Select-Object -ExpandProperty VoiceInfo |
+          Select-Object -ExpandProperty Name
+
+# Return as comma-separated text
+`$voices -join ","
+"@
+
+		Add-Tool -Name "get_installed_voices" -Manifest $getInstalledVoicesManifest -Handler $getInstalledVoicesHandler
+	}
+	elseif($_ -eq "text_to_speech"){
+
+		# ----------------------------------------
+		# Add "text_to_speech" Tool
+		# ----------------------------------------
+
+		$ttsManifest = @"
+text_to_speech Tool
+Use this tool to speak text aloud. "voice" and "text" must not be empty or null.
+
+content schema:
+{
+  "voice": "<string>",
+  "text": "<string>"
+}
+"@
+
+		$ttsHandler = @"
+param(`$content)
+
+if(`$content -ne `$null -and -not ([string]::IsNullOrEmpty(`$content.voice)) -and -not ([string]::IsNullOrEmpty(`$content.text)))
+{
+	`$voiceParams = @{
+		Voice = `$content.voice
+    		TextToSpeech = `$content.text
+	}
+
+	callMacro `$false 'InvokeSpeech' 'Macro Main Helpers' `$voiceParams
+
+	"Speech invoked with voice: `$(`$content.voice)"
+}
+else
+{
+	"FAIL: voice and text must not be empty or null"
+}
+"@
+
+		Add-Tool -Name "text_to_speech" -Manifest $ttsManifest -Handler $ttsHandler
+	}
+	elseif($_ -eq "execute_non_query"){
+
+		# ----------------------------------------
+		# Add "execute_non_query" Tool
+		# ----------------------------------------
+
+		$enqManifest = @"
+execute_non_query Tool
+Use this tool to query databases. Returns the number of affected records
+
+"connectionType" must be an integer value - 0 to 6, where 
+
+0 - SQLClient
+1 - Oracle
+2 - OleDb
+3 - ODBC
+4 - MySQL
+5 - PostgreSQL
+6 - SQLite
+
+content schema:
+{
+  "commandText": "<string>",
+  "connectionType": "<int>",
+  "connectionString": "<string>"
+}
+"@
+
+		$enqHandler = @"
+param(`$content)
+
+if(`$content -ne `$null -and -not ([string]::IsNullOrEmpty(`$content.commandText)) -and -not ([string]::IsNullOrEmpty(`$content.connectionString)) -and `$content.connectionType -ne `$null)
+{	
+	`$affectedRecords = ExecuteNonQuery `$content.commandText `$content.connectionType `$content.connectionString
+
+	`$affectedRecords
+}
+else
+{
+	"FAIL: commandText, connectionString, and connectionType must not be empty or null"
+}
+"@
+
+		Add-Tool -Name "execute_non_query" -Manifest $enqManifest -Handler $enqHandler
+	}
+	elseif($_ -eq "execute_dataset"){
+
+		# ----------------------------------------
+		# Add "execute_dataset" Tool
+		# ----------------------------------------
+
+		$edsManifest = @"
+execute_dataset Tool
+Use this tool to query databases and return data.
+
+Returns:
+- A JSON object containing one entry per table in the dataset.
+- Each entry has the structure:
+    {
+      "<tableName>": {
+        "rowCount": <int>,
+        "format": "json" | "csv" | "error",
+        "data": "<string>"
+      }
+    }
+
+Format rules:
+- If a table has ≤ 300 rows: "format" = "json", "data" = JSON string
+- If a table has > 300 rows and ≤ 5000 rows: "format" = "csv", "data" = CSV string
+- If a table has > 5000 rows: "format" = "error", "data" = "FAIL: dataset too large (>5000 rows)"
+
+content schema:
+{
+  "commandText": "<string>",
+  "connectionType": "<int>",
+  "connectionString": "<string>"
+}
+"@
+
+		$edsHandler = @"
+param(`$content)
+
+if (`$content -ne `$null -and 
+    -not ([string]::IsNullOrEmpty(`$content.commandText)) -and 
+    -not ([string]::IsNullOrEmpty(`$content.connectionString)) -and 
+    `$content.connectionType -ne `$null)
+{
+    `$ds = ExecuteDataset `$content.commandText `$content.connectionType `$content.connectionString
+
+    if (`$ds -eq `$null -or `$ds.Tables.Count -eq 0) {
+        return "FAIL: dataset is empty"
+    }
+
+    # Build result object for all tables
+    `$resultObj = @{}
+
+    for (`$i = 0; `$i -lt `$ds.Tables.Count; `$i++) {
+
+        `$table = `$ds.Tables[`$i]
+        `$tableName = if ([string]::IsNullOrEmpty(`$table.TableName)) { "Table`$i" } else { `$table.TableName }
+        `$rowCount = `$table.Rows.Count
+
+        # JSON for small tables
+        if (`$rowCount -le 300) {
+
+		`$dataOnly = foreach (`$row in `$table.Rows) {
+    			`$obj = @{}
+    			foreach (`$col in `$table.Columns) {
+        			`$obj[`$col.ColumnName] = `$row[`$col]
+    			}
+    			`$obj
+	   	}
+		
+            `$json = `$dataOnly | ConvertTo-Json -Compress -Depth 4
+            `$resultObj[`$tableName] = @{
+                rowCount = `$rowCount
+                format   = "json"
+                data     = `$json
+            }
+        }
+        # CSV for medium tables
+        elseif (`$rowCount -le 5000) {
+            `$csv = `$table | ConvertTo-Csv -NoTypeInformation
+            `$resultObj[`$tableName] = @{
+                rowCount = `$rowCount
+                format   = "csv"
+                data     = `$csv -join "`n"
+            }
+        }
+        # Too large
+        else {
+            `$resultObj[`$tableName] = @{
+                rowCount = `$rowCount
+                format   = "error"
+                data     = "FAIL: dataset too large (>5000 rows)"
+            }
+        }
+    }
+
+    # Return final JSON object
+
+    return `$resultObj | ConvertTo-Json -Compress -Depth 4
+}
+else {
+    "FAIL: commandText, connectionString, and connectionType must not be empty or null"
+}
+"@
+
+		Add-Tool -Name "execute_dataset" -Manifest $edsManifest -Handler $edsHandler
+	}
+	elseif($_ -eq "delegate"){
+
+		# ----------------------------------------
+		# Add "delegate" Tool
+		# ----------------------------------------
+
+		$delegateManifest = @"
+delegate Tool
+Use this tool to delegate tasks to another agent.
+
+IMPORTANT:
+- The ONLY allowed field in the content object is "AgentGoal".
+- The content object MUST NOT contain any additional fields.
+- The content object MUST NOT omit the "AgentGoal" field.
+- The content object MUST NOT restructure or rename fields.
+- Any payloads, data, text, or instructions MUST be embedded INSIDE the AgentGoal string.
+- The AgentGoal string MUST contain ALL information required by the delegated agent.
+- Do NOT create additional JSON fields for payloads. Embed them directly into AgentGoal.
+
+content schema (STRICT):
+{
+  "AgentGoal": "<string>"
+}
+"@
+
+		$delegateHandler = @"
+param(`$content)
+
+if(`$content -ne `$null -and -not ([string]::IsNullOrEmpty(`$content.AgentGoal)))
+{
+	
+	`$agentParams = [pscustomobject]@{
+		Provider      = `$GLOBAL:AIProvider
+    		Model         = `$GLOBAL:AIModel
+		APIKey        = `$GLOBAL:APIKey
+		AgentGoal     = `$content.AgentGoal
+		MaxIterations = `$GLOBAL:MaxIterations
+		EnableLogging = `$GLOBAL:EnableLogging
+		EnabledTools = @(
+			"powershell_single_script_exec"
+			"powershell_multiple_script_exec"
+			"javascript_single_script_eval"
+			"ask_user"
+			"get_installed_voices"
+			"text_to_speech"
+			"execute_non_query"
+			"execute_dataset"
+			"delegate"
+			"web_search"
+			"http_get"
+			"http_post"
+			"file_read"
+		)
+
+	}
+
+	# call Agent
+	`$response = callMacro `$false 'AI Agent' 'Macro Main Helpers\\AI' `$agentParams
+
+	`$response
+}
+else
+{
+	"FAIL: AgentGoal must not be empty or null"
+}
+"@
+
+		Add-Tool -Name "delegate" -Manifest $delegateManifest -Handler $delegateHandler
+	}
+	elseif($_ -eq "web_search"){
+
+		# ----------------------------------------
+		# Add "web_search" Tool
+		# ----------------------------------------
+
+		$wsManifest = @"
+web_search Tool
+Use this tool to perform a web search.
+
+The tool accepts a single field: "query".
+The query is a natural-language search string containing the keywords, phrases, or question you want to search for.
+
+Guidelines:
+- The ONLY allowed field in the content object is "query".
+- The query MUST be a plain string.
+- Do NOT add additional fields.
+- Do NOT restructure the content object.
+
+Return Value (JSON):
+The tool returns a JSON object with the following structure:
+
+{
+  "Provider": "<string>",
+  "Query": "<string>",
+  "Results": [
+    {
+      "Title": "<string>",
+      "Url": "<string>",
+      "Content": "<string>"   // full document
+    }
+  ]
+}
+
+Use the fields inside Results[] to interpret the search results.
+"@
+
+		$wsHandler = @"
+param(`$content)
+
+`$params = [pscustomobject]@{
+    Query       = `$content.query
+    ReturnValue = `$null
+}
+
+callMacro $false 'WebSearch' 'Macro Main Helpers\Network' `$params
+
+`$json = `$params.ReturnValue | ConvertTo-Json -Depth 5
+
+return `$json
+"@
+
+		Add-Tool -Name "web_search" -Manifest $wsManifest -Handler $wsHandler
+	}
+	elseif($_ -eq "http_get"){
+
+		# ----------------------------------------
+		# Add "http_get" Tool
+		# ----------------------------------------
+
+		$hgManifest = @"
+http_get Tool
+Use this tool to perform an HTTP GET request.
+
+Input schema:
+{
+  "url": "<string>",              // target URL
+  "headers": { "<key>": "<value>" } // optional, may be omitted
+}
+
+Return (JSON):
+{
+  "StatusCode": <number>,
+  "Headers": { "<key>": "<value>" },
+  "Body": "<string>"
+}
+"@
+
+		$hgHandler = @"
+param(`$content)
+
+`$url     = `$content.url
+`$headers = `$content.headers
+
+if ([string]::IsNullOrWhiteSpace(`$url)) {
+    return "FAIL: URL is empty"
+}
+
+try {
+    if (`$headers -ne `$null) {
+
+        # Convert PSCustomObject to Hashtable
+        `$headerHash = @{}
+        foreach (`$kv in `$headers.PSObject.Properties) {
+            `$headerHash[`$kv.Name] = `$kv.Value
+        }
+
+        `$resp = Invoke-WebRequest -Uri `$url -Headers `$headerHash -TimeoutSec 30 -UseBasicParsing
+    }
+    else {
+        `$resp = Invoke-WebRequest -Uri `$url -TimeoutSec 30 -UseBasicParsing
+    }
+
+    `$obj = [pscustomobject]@{
+        StatusCode = `$resp.StatusCode
+        Headers    = `$resp.Headers
+        Body       = `$resp.Content
+    }
+
+    return (`$obj | ConvertTo-Json -Depth 5)
+}
+catch {
+    return ("FAIL: HTTP GET error: " + `$_.Exception.Message)
+}
+"@
+
+		Add-Tool -Name "http_get" -Manifest $hgManifest -Handler $hgHandler
+	}
+	elseif($_ -eq "http_post"){
+
+		# ----------------------------------------
+		# Add "http_post" Tool
+		# ----------------------------------------
+
+		$hpManifest = @"
+http_post Tool
+Use this tool to perform an HTTP POST request.
+
+Input schema:
+{
+  "url": "<string>",                // target URL
+  "headers": { "<key>": "<value>" },// optional, may be omitted
+  "body": "<string>"                // request body (usually JSON or form data)
+}
+
+Return (JSON):
+{
+  "StatusCode": <number>,
+  "Headers": { "<key>": "<value>" },
+  "Body": "<string>"
+}
+"@
+
+		$hpHandler = @"
+param(`$content)
+
+`$url     = `$content.url
+`$headers = `$content.headers
+`$body    = `$content.body
+
+if ([string]::IsNullOrWhiteSpace(`$url)) {
+    return "FAIL: URL is empty"
+}
+
+try {
+    if (`$headers -ne `$null) {
+
+        # Convert PSCustomObject to Hashtable
+        `$headerHash = @{}
+        foreach (`$kv in `$headers.PSObject.Properties) {
+            `$headerHash[`$kv.Name] = `$kv.Value
+        }
+
+        `$resp = Invoke-WebRequest -Uri `$url -Method Post -Headers `$headerHash -Body `$body -TimeoutSec 30 -UseBasicParsing
+    }
+    else {
+        `$resp = Invoke-WebRequest -Uri `$url -Method Post -Body `$body -TimeoutSec 30 -UseBasicParsing
+    }
+
+    `$obj = [pscustomobject]@{
+        StatusCode = `$resp.StatusCode
+        Headers    = `$resp.Headers
+        Body       = `$resp.Content
+    }
+
+    return (`$obj | ConvertTo-Json -Depth 5)
+}
+catch {
+    return ("FAIL: HTTP POST error: " + `$_.Exception.Message)
+}
+"@
+
+		Add-Tool -Name "http_post" -Manifest $hpManifest -Handler $hpHandler
+	}
+	elseif($_ -eq "file_read"){
+
+		# ----------------------------------------
+		# Add "file_read" Tool
+		# ----------------------------------------
+
+		$frManifest = @"
+file_read Tool
+Use this tool to read the contents of a text file.
+
+Input schema:
+{
+  "path": "<string>"   // full or relative file path
+}
+
+Return:
+- Raw file contents as a string.
+"@
+
+		$frHandler = @"
+param(`$content)
+
+`$path = `$content.path
+
+if (-not (Test-Path -LiteralPath `$path)) {
+    return "FAIL: File not found: `$path"
+}
+
+try {
+    `$text = Get-Content -LiteralPath `$path -Raw
+    return `$text
+}
+catch {
+    return ("FAIL: Error reading file: " + `$_.Exception.Message)
+}
+"@
+
+		Add-Tool -Name "file_read" -Manifest $frManifest -Handler $frHandler
+	}
+	elseif($_ -eq "file_write"){
+
+		# ----------------------------------------
+		# Add "file_write" Tool
+		# ----------------------------------------
+
+		$fwManifest = @"
+file_write Tool
+Use this tool to write text content to a file.
+
+Input schema:
+{
+  "path": "<string>",   // full or relative file path
+  "content": "<string>" // text to write
+}
+
+Return:
+- "OK" on success.
+- "FAIL: ..." on error.
+"@
+
+		$fwHandler = @"
+param(`$content)
+
+`$path    = `$content.path
+`$contentText = `$content.content
+
+try {
+    Set-Content -LiteralPath `$path -Value `$contentText
+    return "OK"
+}
+catch {
+    return ("FAIL: Error writing file: " + `$_.Exception.Message)
+}
+"@
+
+		Add-Tool -Name "file_write" -Manifest $fwManifest -Handler $fwHandler
+	}
+	elseif($_ -eq "file_list"){
+
+		# ----------------------------------------
+		# Add "file_list" Tool
+		# ----------------------------------------
+
+		$flManifest = @"
+file_list Tool
+Use this tool to list files in a directory.
+
+Input schema:
+{
+  "path": "<string>" // directory path
+}
+
+Return (JSON):
+[
+  {
+    "Name": "<string>",
+    "FullName": "<string>",
+    "Length": <number>,
+    "LastWriteTime": "<string>"
+  }
+]
+"@
+
+		$flHandler = @"
+param(`$content)
+
+`$path = `$content.path
+
+if (-not (Test-Path -LiteralPath `$path)) {
+    return "FAIL: Directory not found: `$path"
+}
+
+try {
+    `$files = Get-ChildItem -LiteralPath `$path -File | ForEach-Object {
+        [pscustomobject]@{
+            Name          = `$_.Name
+            FullName      = `$_.FullName
+            Length        = `$_.Length
+            LastWriteTime = `$_.LastWriteTime.ToString('o')
+        }
+    }
+
+    return (`$files | ConvertTo-Json -Depth 5)
+}
+catch {
+    return ("FAIL: Error listing files: " + `$_.Exception.Message)
+}
+"@
+
+		Add-Tool -Name "file_list" -Manifest $flManifest -Handler $flHandler
+	}
+})
+
+# ----------------------------------------
+# Add "finish" tool if not added already
+# ----------------------------------------
+
+$finishTool = $GLOBAL:Tools | Where-Object { $_.Name -eq "finish" } | Select-Object -First 1
+
+if (-not $finishTool) {
+
+	$finishManifest = @"
+Finish Tool
+Use this tool to end the agent loop and return the final result.
+
+content schema:
+{
+  "result": "<string>"
+}
+"@
+
+	$finishHandler = @'
+param($content)
+
+"FINISH: $($content.result)"
+'@
+
+	Add-Tool -Name "finish" -Manifest $finishManifest -Handler $finishHandler
+}
+
+# ----------------------------------
+# Build System Instructions
+# ----------------------------------
+function Build-SystemInstructions {
+	# If no tools registered, return a minimal system prompt
+	if (-not $GLOBAL:Tools -or $GLOBAL:Tools.Count -eq 0) {
+		return @"
+You are an agent that must respond ONLY with a single JSON object.
+
+Since no tools are available, the ONLY valid action is "finish".
+Any other action is invalid.
+
+You MUST respond with:
+
+{
+  "action": "finish",
+  "content": {
+    "result": "<your final output>"
+  }
+}
+
+Rules:
+- Respond ONLY with valid JSON.
+- Never include commentary outside the JSON.
+"@
+	}
+
+	# Otherwise build full tool manifest
+	$toolText = ""
+
+	foreach ($tool in $GLOBAL:Tools) {
+		$manifest = $tool.Manifest
+		if (-not $manifest) { $manifest = "(No manifest provided)" }
+
+			$toolText += @"
+
+Tool: $($tool.Name)
+
+$manifest
+
+"@
+	}
+
+	return @"
+You are an agent that uses tools by returning JSON:
+
+{
+  "action": "<tool_name>",
+  "content": { ... }
+}
+
+Available tools:
+$toolText
+
+Rules:
+- Respond ONLY with a single JSON object.
+- Never include commentary outside the JSON.
+- Use the correct content schema for each tool.
+
+STATE Block Rules:
+- The STATE block contains authoritative results from previous tool calls.
+- The STATE block is NOT conversation history. It is NOT internal context.
+- The STATE block is external data provided by the host system.
+- You MUST use the STATE block to determine whether the Goal is already satisfied.
+- If the STATE block contains the required information, you MUST NOT call any tools.
+- When the STATE block satisfies the Goal, you MUST call the "finish" tool immediately.
+
+SCRATCHPAD Rules:
+- The scratchpad is the agent's private memory.
+- It is NOT part of STATE.
+- It is NOT visible to the user.
+- Use scratchpad_write to store intermediate reasoning.
+- Use scratchpad_read to retrieve your own notes.
+- Do NOT store final results in the scratchpad.
+- Final results must be returned via the "finish" tool.
+
+"@
+}
+
+$GLOBAL:SystemInstructions = Build-SystemInstructions
+
+# ----------------------------
+# Utility: truncate context to last N chars (preserve recent entries)
+# ----------------------------
+function Truncate-Context {
+	param([string[]]$ContextLines, [int]$MaxChars)
+
+	$joined = ($ContextLines -join "`n")
+	if ($joined.Length -le $MaxChars) { return $ContextLines }
+	# keep last portion
+	$tail = $joined.Substring($joined.Length - $MaxChars)
+	# split into lines and return
+	return $tail -split "`n"
+}
+
+function Extract-AllJsonBlocks {
+    param([string]$text)
+
+	$blocks = @()
+	$start = -1
+	$depth = 0
+
+	for ($i = 0; $i -lt $text.Length; $i++) {
+		if ($text[$i] -eq '{') {
+			if ($depth -eq 0) { $start = $i }
+			$depth++
+		}
+		elseif ($text[$i] -eq '}') {
+			$depth--
+			if ($depth -eq 0 -and $start -ge 0) {
+				$blocks += $text.Substring($start, $i - $start + 1)
+				$start = -1
+            	}
+		}
+	}
+
+	log-info "JSON blocks count: $($blocks.Count)"
+
+    return $blocks
+}
+
+# ----------------------------------
+# Handle AI Action
+# ----------------------------------
+function Handle-AIAction {
+	param($actionObj)
+
+	$action  = $actionObj.action
+	$content = $actionObj.content
+
+	log-info "Handle-AIAction; Action : $action"
+
+	# Find tool by name	
+	$tool = $GLOBAL:Tools | Where-Object { $_.Name -eq $action } | Select-Object -First 1
+
+	# UNKNOWN TOOL
+	if (-not $tool) {
+		$GLOBAL:State["agent_error"] = "FAIL: UNKNOWN TOOL '$action'"
+
+		log-info $GLOBAL:State["agent_error"]
+
+		return $false
+	}
+
+	if ($action -eq "state_store") {
+
+		if ($content -and $content.key -and $content.value) {
+
+			# Store arbitrary key/value pair
+			$GLOBAL:State[$content.key] = $content.value
+
+			# Standard tool success markers
+			$GLOBAL:State["state_store"] = "OK"
+			$GLOBAL:State["state_store_error"] = ""
+
+			log-info "state_store: stored key '$($content.key)'"			
+		}
+		else {
+			$GLOBAL:State["state_store_error"] = "FAIL: key and value must not be empty"
+			log-info $GLOBAL:State["state_store_error"]
+		}
+
+		return $false
+	}
+
+	# TOOL HAS NO HANDLER
+	if (-not $tool.Handler) {
+		$GLOBAL:State["$action`_error"] = "FAIL: Tool '$action' has no handler"
+
+		log-info $GLOBAL:State["$action`_error"]
+
+		return $false
+	}
+
+	try {
+		log-info "Handler Source Code: $($tool.Handler)"
+
+		$handlerBlock = [ScriptBlock]::Create($tool.Handler)
+		$result = & $handlerBlock $content
+	
+		$resultString = $result | Out-String
+
+		if($action -eq "finish"){
+			$GLOBAL:Result = $resultString
+		}
+
+		if ($resultString -match '^FAIL') {
+			$GLOBAL:State["$action`_error"] = $resultString
+		} else {
+			$GLOBAL:State["$action"] = $resultString
+			$GLOBAL:State["$action`_error"] = ""
+		}
+	}
+	catch {
+
+		$msg = $_.Exception.Message
+		$GLOBAL:State["$action`_error"] = "FAIL: $msg"
+		log-error $GLOBAL:State["$action`_error"]
+	}
+
+	return ($action -eq "finish")
+}
+
+# ----------------------------------
+# Tool schema registry (per tool)
+# ----------------------------------
+function Get-ToolSchema {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ToolName
+    )
+
+    switch ($ToolName) {
+
+        'finish' {
+            return @{
+                RequiredFields = @('result')
+                OptionalFields = @()
+                AllowExtra     = $false
+            }
+        }
+
+        'state_store' {
+            return @{
+                RequiredFields = @('key','value')
+                OptionalFields = @()
+                AllowExtra     = $false
+            }
+        }
+
+        'delegate' {
+            return @{
+                RequiredFields = @('AgentGoal')
+                OptionalFields = @()
+                AllowExtra     = $false
+            }
+        }
+
+        'web_search' {
+            return @{
+                RequiredFields = @('query')
+                OptionalFields = @()
+                AllowExtra     = $false
+            }
+        }
+
+        'http_get' {
+            return @{
+                RequiredFields = @('url')
+                OptionalFields = @('headers')
+                AllowExtra     = $false
+            }
+        }
+
+        'http_post' {
+            return @{
+                RequiredFields = @('url','body')
+                OptionalFields = @('headers')
+                AllowExtra     = $false
+            }
+        }
+
+        'file_read' {
+            return @{
+                RequiredFields = @('path')
+                OptionalFields = @()
+                AllowExtra     = $false
+            }
+        }
+
+        'file_write' {
+            return @{
+                RequiredFields = @('path','content')
+                OptionalFields = @()
+                AllowExtra     = $false
+            }
+        }
+
+        'file_list' {
+            return @{
+                RequiredFields = @('path')
+                OptionalFields = @()
+                AllowExtra     = $false
+            }
+        }
+
+        'powershell_single_script_exec' {
+            return @{
+                RequiredFields = @('pscode')
+                OptionalFields = @()
+                AllowExtra     = $false
+            }
+        }
+
+        'powershell_multiple_script_exec' {
+            return @{
+                RequiredFields = @('pscode')
+                OptionalFields = @()
+                AllowExtra     = $false
+            }
+        }
+
+        'javascript_single_script_eval' {
+            return @{
+                RequiredFields = @('jscode')
+                OptionalFields = @()
+                AllowExtra     = $false
+            }
+        }
+
+        'ask_user' {
+            return @{
+                RequiredFields = @('title','question','defaultresponse')
+                OptionalFields = @()
+                AllowExtra     = $false
+            }
+        }
+
+        'get_installed_voices' {
+            return @{
+                RequiredFields = @()
+                OptionalFields = @()
+                AllowExtra     = $true
+            }
+        }
+
+        'text_to_speech' {
+            return @{
+                RequiredFields = @('voice','text')
+                OptionalFields = @()
+                AllowExtra     = $false
+            }
+        }
+
+        'execute_non_query' {
+            return @{
+                RequiredFields = @('commandText','connectionType','connectionString')
+                OptionalFields = @()
+                AllowExtra     = $false
+            }
+        }
+
+        'execute_dataset' {
+            return @{
+                RequiredFields = @('commandText','connectionType','connectionString')
+                OptionalFields = @()
+                AllowExtra     = $false
+            }
+        }
+
+        default {
+            # Unknown tool: allow content but still require an object
+            return @{
+                RequiredFields = @()
+                OptionalFields = @()
+                AllowExtra     = $true
+            }
+        }
+    }
+}
+
+# ----------------------------------
+# Convert PSCustomObject ? Hashtable (metadata-free)
+# ----------------------------------
+function ConvertTo-PureHashtable {
+    param([Parameter(Mandatory=$true)] $obj)
+
+    $ht = @{}
+
+    foreach ($prop in $obj.PSObject.Properties) {
+        $name  = $prop.Name
+        $value = $prop.Value
+
+        # Skip metadata
+        if ($name -in @('PSObject','BaseObject','TypeNames','Members','ImmediateBaseObject')) {
+            continue
+        }
+        if ($name -match '^__') {
+            continue
+        }
+
+        # Recursively convert nested objects
+        if ($value -is [System.Management.Automation.PSCustomObject]) {
+            $ht[$name] = ConvertTo-PureHashtable $value
+        }
+        elseif ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
+            $arr = @()
+            foreach ($item in $value) {
+                if ($item -is [System.Management.Automation.PSCustomObject]) {
+                    $arr += ConvertTo-PureHashtable $item
+                }
+                else {
+                    $arr += $item
+                }
+            }
+            $ht[$name] = $arr
+        }
+        else {
+            $ht[$name] = $value
+        }
+    }
+
+    return $ht
+}
+
+# ----------------------------------
+# Validate a tool call using pure hashtable
+# ----------------------------------
+function Validate-ToolCall {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$JsonText
+    )
+
+    # Parse JSON into PSCustomObject
+    try {
+        $obj = $JsonText | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        $GLOBAL:State["agent_error"] = "FAIL: invalid JSON: $($_.Exception.Message)"
+        return $false
+    }
+
+    # Convert to pure hashtable (no metadata)
+    $ht = ConvertTo-PureHashtable $obj
+
+    if (-not ($ht -is [hashtable])) {
+        $GLOBAL:State["agent_error"] = "FAIL: JSON must be an object"
+        return $false
+    }
+
+    # Basic structure
+    if (-not $ht.ContainsKey('action')) {
+        $GLOBAL:State["agent_error"] = "FAIL: Missing 'action'"
+        return $false
+    }
+    if (-not $ht.ContainsKey('content')) {
+        $GLOBAL:State["agent_error"] = "FAIL: Missing 'content'"
+        return $false
+    }
+
+    $action  = $ht['action']
+    $content = $ht['content']
+
+    # Tool existence
+    $tool = $GLOBAL:Tools | Where-Object { $_.Name -eq $action } | Select-Object -First 1
+    if (-not $tool) {
+        $GLOBAL:State["agent_error"] = "FAIL: UNKNOWN TOOL '$action'"
+        return $false
+    }
+
+    if (-not ($content -is [hashtable])) {
+        $GLOBAL:State["agent_error"] = "FAIL: content must be an object"
+        return $false
+    }
+
+    # Schema lookup
+    $schema     = Get-ToolSchema -ToolName $action
+    $required   = $schema.RequiredFields
+    $optional   = $schema.OptionalFields
+    $allowExtra = $schema.AllowExtra
+
+    $keys = $content.Keys
+
+    # Required fields
+    foreach ($field in $required) {
+        if (-not ($keys -contains $field)) {
+            $GLOBAL:State["agent_error"] = "FAIL: Tool '$action' missing required field '$field'"
+            return $false
+        }
+    }
+
+    # Extra fields
+    if (-not $allowExtra) {
+        $allowed = $required + $optional
+        foreach ($field in $keys) {
+            if (-not ($allowed -contains $field)) {
+                $GLOBAL:State["agent_error"] = "FAIL: Tool '$action' has unexpected field '$field'"
+                return $false
+            }
+        }
+    }
+
+    # Delegate strictness
+    if ($action -eq 'delegate') {
+        if ($keys.Count -ne 1 -or -not ($keys -contains 'AgentGoal')) {
+            $GLOBAL:State["agent_error"] = "FAIL: delegate tool must contain ONLY 'AgentGoal'"
+            return $false
+        }
+    }
+
+    # web_search strictness
+    if ($action -eq 'web_search') {
+        if ($keys.Count -ne 1 -or -not ($keys -contains 'query')) {
+            $GLOBAL:State["agent_error"] = "FAIL: web_search tool must contain ONLY 'query'"
+            return $false
+        }
+    }
+
+    return $true
+}
+
+
+# ----------------------------
+# Main Run-Agent loop
+# ----------------------------
+
+$iter = 0
+
+# only iterate if tools were provided
+if ($GLOBAL:Tools.Count -eq 0) {
+    $iter = $GLOBAL:MaxIterations
+}
+
+# Build static AI params
+
+if($GLOBAL:AIProvider -and $GLOBAL:APIKey){
+
+	# cloud model
+
+	if ($GLOBAL:AIHelper -eq $null) {
+
+		$GLOBAL:AIHelper = [AIHelper]::new()
+		$GLOBAL:AIHelper.Provider      = $GLOBAL:AIProvider
+		$GLOBAL:AIHelper.Model         = $GLOBAL:AIModel
+		$GLOBAL:AIHelper.ApiKey        = $GLOBAL:APIKey
+		$GLOBAL:AIHelper.SystemPrompt  = $GLOBAL:SystemInstructions
+	}
+}
+else{
+	# local model
+	$aiParams = @{
+		Model  = $GLOBAL:AIModel
+		System = $GLOBAL:SystemInstructions
+	}
+}
+
+while ($iter -lt [int]$GLOBAL:MaxIterations) {
+	$iter++
+
+	# Yield UI
+	[System.Windows.Forms.Application]::DoEvents()
+
+	# ----------------------------------------
+	# Add agent metadata into STATE
+	# ----------------------------------------
+
+	# Track iteration count
+	$GLOBAL:State["iteration"] = $iter
+
+	# Track number of available tools
+	$GLOBAL:State["tool_count"] = $GLOBAL:Tools.Count
+
+	# Track last action (if any)
+	if ($actionObj -ne $null -and $actionObj.action) {
+	    $GLOBAL:State["last_action"] = $actionObj.action
+	}
+
+	if ($GLOBAL:State.Count -eq 0) {
+		$stateBlock = "<empty>"
+	} else {
+		$stateBlock = ($GLOBAL:State.GetEnumerator() | ForEach-Object {
+			$key = $_.Key
+			$value = $_.Value.ToString().Replace("`n", "`n  ")
+			"  $($key): $($value)"
+		}) -join "`n"
+	}
+
+
+	$scratchBlock = ($GLOBAL:ScratchPad.GetEnumerator() | ForEach-Object {
+	    "  $($_.Key): $($_.Value)"
+	}) -join "`n"
+
+	$agentPrompt = @"
+You are an agent running inside AdvantageBuilder.
+
+Goal:
+$($GLOBAL:AgentGoal)
+
+Use any available tools, if needed.
+Once you get the results in a state, use it, no need to re-run the tools.
+
+SCRATCHPAD:
+This is your private memory. Use it for planning.
+$scratchBlock
+
+STATE:
+The following is the authoritative state of the world.
+This STATE block contains results from previous tool calls.
+You MUST treat STATE as the single source of truth.
+You MUST NOT re-run any tool if STATE already contains the needed information.
+
+$stateBlock
+
+Respond ONLY with valid JSON.
+"@
+
+	log-info "Loop iteration: $iter"
+	log-info "Agent Prompt: $agentPrompt"
+	log-info "System Instructions: $GLOBAL:SystemInstructions"
+
+	# Call AI helper (returns plain string)
+
+	if ($GLOBAL:AIHelper -eq $null){
+
+		$aiParams.Prompt = $agentPrompt
+		$response = callMacro $false 'AI Ollama Helper' 'Macro Main Helpers\AI' $aiParams
+
+	}
+	else{
+		$response = $GLOBAL:AIHelper.Send($agentPrompt)
+	}
+	
+	log-info $response
+
+	$aiText = if ($null -eq $response) { "" } else { $response.ToString() }
+
+	if ([string]::IsNullOrWhiteSpace($aiText)) {
+		$GLOBAL:State["agent_error"] = "FAIL: AI returned empty response"
+		Start-Sleep -Seconds $GLOBAL:IterationDelay
+		continue
+	}
+
+	log-info "parsing..."
+
+	$finished = $false
+
+	# Parse first JSON block
+	$actionObj = $null
+	try {
+
+		$jsonBlocks = Extract-AllJsonBlocks $aiText
+
+		foreach ($json in $jsonBlocks) {
+
+			log-info "Start ConvertFrom-Json : $json"
+
+			if (-not (Validate-ToolCall -JsonText $json)) {
+				log-error "Tool call validation failed for JSON: $json"
+
+				break
+			}
+
+			$actionObj = $json | ConvertFrom-Json -ErrorAction Stop
+
+			log-info "End ConvertFrom-Json; Action: $($actionObj.action)"
+
+			if (Handle-AIAction -actionObj $actionObj) {
+				$finished = $true
+				break   # stop processing remaining JSON blocks
+			}
+
+			log-info "Finished: $finished"
+
+			if ($finished) { break }
+		}
+
+	}
+	catch {
+
+		log-error "AI unparsable on iter $($iter): $($aiText)"
+		log-error $_.Exception.Message
+
+		# Authoritative state update
+		$GLOBAL:State["agent_error"] = "FAIL: AI unparsable JSON"
+
+		Start-Sleep -Seconds $GLOBAL:IterationDelay
+		continue
+	}
+
+	if ($finished) {
+		break   # stop the OUTER agent loop
+	}
+	
+	Start-Sleep -Seconds $GLOBAL:IterationDelay
+}
+
+if ($iter -ge $GLOBAL:MaxIterations) {
+	alert "Agent reached max iterations ($($GLOBAL:MaxIterations)) without finishing."
+
+      # Authoritative state update
+	$GLOBAL:State["agent_error"] = "FAIL: Agent timed out after $iter iterations"
+}
+
+$GLOBAL:Result
+
+[!/POWERSHELLSCRIPT]
